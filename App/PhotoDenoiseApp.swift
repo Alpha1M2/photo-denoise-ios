@@ -30,7 +30,7 @@ import ImageIO
     init() {
         if smoke { Task { @MainActor in
             if ProcessInfo.processInfo.arguments.contains("--smoke-linear") {
-                DispatchQueue.global().async {let ok=DenoiseEngine.testLinearFixture();Task{@MainActor in self.reportSmoke(ok,"Linear fixture: transfer, tile coordinates and DNG pixel roundtrip")}};return
+                DispatchQueue.global().async {let detail=DenoiseEngine.testLinearFixture();Task{@MainActor in self.reportSmoke(detail.hasPrefix("PASS"),detail)}};return
             }
             let raw=ProcessInfo.processInfo.arguments.contains("--smoke-raw")
             let url=FileManager.default.temporaryDirectory.appendingPathComponent(raw ? "synthetic.dng" : "synthetic.jpg")

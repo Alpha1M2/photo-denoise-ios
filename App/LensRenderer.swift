@@ -71,7 +71,7 @@ enum LensRenderer {
             let inset=rect.insetBy(dx:w*0.04,dy:h*0.04)
             result=corrected.cropped(to:inset).transformed(by:CGAffineTransform(translationX:-inset.minX,y:-inset.minY))
         }
-        let context=CIContext(options:[.cacheIntermediates:false])
+        let context=CIContext(options:[.cacheIntermediates:false,.workingFormat:CIFormat.RGBAf.rawValue])
         try context.writeTIFFRepresentation(of:result,to:destination,format:.RGBA16,colorSpace:CGColorSpace(name:CGColorSpace.sRGB)!,options:[:])
     }
     static func error(_ message:String)->NSError{NSError(domain:"LensCorrection",code:1,userInfo:[NSLocalizedDescriptionKey:message])}

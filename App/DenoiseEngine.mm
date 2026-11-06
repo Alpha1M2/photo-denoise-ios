@@ -11,20 +11,22 @@ static NSError *failure(NSString*s){return [NSError errorWithDomain:@"JingYing" 
 static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0)n=-n;if(n>=size)n=2*size-2-n;}return n;}
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @implementation DenoiseEngine
-+ (BOOL)testLinearFixture {
++ (NSString*)testLinearFixture {
  const int w=601,h=319;std::vector<uint16_t> pixels((size_t)w*h*4);
  for(int y=0;y<h;y++)for(int x=0;x<w;x++){for(int c=0;c<3;c++)pixels[((size_t)y*w+x)*4+c]=1000+(x*31+y*53+c*7000)%50000;pixels[((size_t)y*w+x)*4+3]=65535;}
  NSURL*src=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".tiff"]]];
  NSURL*dst=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".dng"]]];
  CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
  NSData*data=[NSData dataWithBytes:pixels.data() length:pixels.size()*2];CIImage*ci=[CIImage imageWithBitmapData:data bytesPerRow:w*8 size:CGSizeMake(w,h) format:kCIFormatRGBA16 colorSpace:cs];
- BOOL ok=[[CIContext contextWithOptions:nil] writeTIFFRepresentationOfImage:ci toURL:src format:kCIFormatRGBA16 colorSpace:cs options:@{} error:nil];CGColorSpaceRelease(cs);
+ BOOL ok=[[CIContext contextWithOptions:@{kCIContextWorkingFormat:@(kCIFormatRGBAf)}] writeTIFFRepresentationOfImage:ci toURL:src format:kCIFormatRGBA16 colorSpace:cs options:@{} error:nil];CGColorSpaceRelease(cs);
  DenoiseEngine*engine=[DenoiseEngine new];engine.useLocalLinearModel=YES;
  if(ok)ok=[engine process:src destination:dst strength:1 raw:NO preview:NO center:CGPointZero progress:^(double v){} error:nil]!=nil;
  NSData*out=[NSData dataWithContentsOfURL:dst];size_t length=(size_t)w*h*6;
  if(!out||out.length<length)ok=NO;
- if(ok){const uint16_t*p=(const uint16_t*)((const uint8_t*)out.bytes+out.length-length);for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++)if(std::abs((int)p[i*3+c]-(int)pixels[i*4+c])>3)ok=NO;}
- [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return ok;
+ int maximum=0,flippedMaximum=0,first=-1;
+ if(ok){const uint16_t*p=(const uint16_t*)((const uint8_t*)out.bytes+out.length-length);first=p[0];for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++){maximum=std::max(maximum,std::abs((int)p[i*3+c]-(int)pixels[i*4+c]));size_t flipped=(h-1-i/w)*w+i%w;flippedMaximum=std::max(flippedMaximum,std::abs((int)p[i*3+c]-(int)pixels[flipped*4+c]));}}
+ BOOL passed=ok && maximum<=3;
+ [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0]];
 }
 + (BOOL)hasLocalLinearModel {return [[NSBundle mainBundle] pathForResource:@"local-linear" ofType:@"onnx"] != nil;}
 + (BOOL)renderLinearRaw:(NSURL*)source destination:(NSURL*)destination error:(NSError**)error {
@@ -37,7 +39,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  for(size_t i=0;i<(size_t)w*h;i++){for(int c=0;c<3;c++)dst[i*4+c]=src[i*3+c];dst[i*4+3]=65535;}
  LibRaw::dcraw_clear_mem(im);reader.reset();CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
  CIImage*ci=[CIImage imageWithBitmapData:rgba bytesPerRow:w*8 size:CGSizeMake(w,h) format:kCIFormatRGBA16 colorSpace:cs];
- CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO}];BOOL ok=[ctx writeTIFFRepresentationOfImage:ci toURL:destination format:kCIFormatRGBA16 colorSpace:cs options:@{} error:error];CGColorSpaceRelease(cs);return ok;
+ CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO,kCIContextWorkingFormat:@(kCIFormatRGBAf)}];BOOL ok=[ctx writeTIFFRepresentationOfImage:ci toURL:destination format:kCIFormatRGBA16 colorSpace:cs options:@{} error:error];CGColorSpaceRelease(cs);return ok;
 }
 + (UIImage*)rawPreview:(NSURL*)url {
  auto owner=std::make_unique<LibRaw>();auto&reader=*owner;reader.imgdata.params.half_size=0;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
@@ -96,7 +98,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    width=rect.size.width;height=rect.size.height;
    if(width<1||height<1||(double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"图片超过此版本的 6500 万像素限制。");return nil;}
    if(!linear)rgba.resize((size_t)width*height*4);
-   CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO}];
+   CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO,kCIContextWorkingFormat:@(kCIFormatRGBAf)}];
    if(linear){rgb16.resize((size_t)width*height*4);output.resize((size_t)width*height*3);[ctx render:ci toBitmap:rgb16.data() rowBytes:width*4*sizeof(uint16_t) bounds:rect format:kCIFormatRGBA16 colorSpace:color];}else [ctx render:ci toBitmap:rgba.data() rowBytes:width*4 bounds:rect format:kCIFormatRGBA8 colorSpace:color];
  }
  const int W=raw?width/2:width,H=raw?height/2:height;
