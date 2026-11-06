@@ -59,8 +59,8 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(cg)CGImageRelease(cg);CGColorSpaceRelease(space);CGDataProviderRelease(provider);LibRaw::dcraw_clear_mem(p);return image;
 }
 + (BOOL)writeSmokeRaw:(NSURL*)url {
- double m[9]={.8161,-.2947,-.0739,-.4811,1.2668,.2389,-.0437,.1229,.6524};double n[3]={1024./1871,1,1024./2244};std::vector<uint16_t> p(128*128,8192);
- return dng::write(url.fileSystemRepresentation,p,128,128,"SONY","ILCE-1M2",m,n,1);
+ double m[9]={.8161,-.2947,-.0739,-.4811,1.2668,.2389,-.0437,.1229,.6524};double n[3]={1024./1871,1,1024./2244};std::vector<uint16_t> p(768*768,8192);
+ return dng::write(url.fileSystemRepresentation,p,768,768,"SONY","ILCE-1M2",m,n,1);
 }
 - (NSURL*)process:(NSURL*)source destination:(NSURL*)destination strength:(float)strength raw:(BOOL)raw preview:(BOOL)preview center:(CGPoint)center progress:(void(^)(double))progress error:(NSError**)error {
  if(self.cancelled){if(error)*error=failure(@"已取消");return nil;}
