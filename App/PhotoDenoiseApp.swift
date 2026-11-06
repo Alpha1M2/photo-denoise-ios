@@ -105,12 +105,7 @@ import ImageIO
         return DenoiseEngine.rawPreview(url)
     }
     nonisolated static func linearThumbnail(_ url:URL)->UIImage? {
-        guard let raw=CIRAWFilter(imageURL:url) else{return thumbnail(url)}
-        raw.baselineExposure=0;raw.exposure=0;raw.boostAmount=0;raw.boostShadowAmount=0;raw.localToneMapAmount=0
-        raw.contrastAmount=0;raw.detailAmount=0;raw.sharpnessAmount=0;raw.moireReductionAmount=0
-        raw.luminanceNoiseReductionAmount=0;raw.colorNoiseReductionAmount=0;raw.isLensCorrectionEnabled=false
-        guard let image=raw.outputImage,let cg=CIContext().createCGImage(image,from:image.extent) else{return thumbnail(url)}
-        return UIImage(cgImage:cg)
+        DenoiseEngine.linearBufferPreview(url)
     }
     func cancel() {
         guard busy,!cancelling else{return}

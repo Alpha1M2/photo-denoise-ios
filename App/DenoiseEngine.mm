@@ -39,10 +39,18 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(!ok&&error)*error=failure(@"Unable to write linear RAW buffer");return ok;
 }
 + (UIImage*)linearBufferPreview:(NSURL*)url {
- NSData*data=[NSData dataWithContentsOfURL:url];if(data.length<12)return nil;uint32_t header[3];memcpy(header,data.bytes,12);
- if(header[0]!=0x314c594a||data.length!=12+(size_t)header[1]*header[2]*6)return nil;
- size_t count=(size_t)header[1]*header[2];NSMutableData*pixels=[NSMutableData dataWithLength:count*4];const uint16_t*src=(const uint16_t*)((const uint8_t*)data.bytes+12);uint8_t*dst=(uint8_t*)pixels.mutableBytes;
- for(size_t i=0;i<count;i++){for(int c=0;c<3;c++){double v=src[i*3+c]/65535.;v=v<=.0031308?12.92*v:1.055*std::pow(v,1./2.4)-.055;dst[i*4+c]=(uint8_t)std::lround(std::clamp(v,0.,1.)*255);}dst[i*4+3]=255;}
+ NSData*data=[NSData dataWithContentsOfURL:url];if(data.length<12)return nil;const uint8_t*bytes=(const uint8_t*)data.bytes;uint32_t header[3];memcpy(header,bytes,12);size_t offset=12;
+ if(header[0]!=0x314c594a){
+   if(bytes[0]!='I'||bytes[1]!='I'||bytes[2]!=42||bytes[3]!=0)return nil;
+   uint32_t root=0;memcpy(&root,bytes+4,4);if((size_t)root+2>data.length)return nil;uint16_t tags=0;memcpy(&tags,bytes+root,2);if((size_t)root+2+(size_t)tags*12>data.length)return nil;
+   header[1]=header[2]=0;uint32_t photo=0,samples=0;offset=0;
+   for(unsigned i=0;i<tags;i++){const uint8_t*entry=bytes+root+2+i*12;uint16_t tag=0;uint32_t value=0;memcpy(&tag,entry,2);memcpy(&value,entry+8,4);if(tag==256)header[1]=value;if(tag==257)header[2]=value;if(tag==262)photo=value;if(tag==277)samples=value;if(tag==273)offset=value;}
+   if(photo!=34892||samples!=3)return nil;
+ }
+ size_t count=(size_t)header[1]*header[2];if(!count||count>65000000||offset+count*6!=data.length)return nil;
+ NSMutableData*pixels=[NSMutableData dataWithLength:count*4];const uint16_t*src=(const uint16_t*)(bytes+offset);uint8_t*dst=(uint8_t*)pixels.mutableBytes;
+ static const std::vector<uint8_t> transfer=[](){std::vector<uint8_t> t(65536);for(int i=0;i<65536;i++){double v=i/65535.;v=v<=.0031308?12.92*v:1.055*std::pow(v,1./2.4)-.055;t[i]=(uint8_t)std::lround(std::clamp(v,0.,1.)*255);}return t;}();
+ for(size_t i=0;i<count;i++){for(int c=0;c<3;c++)dst[i*4+c]=transfer[src[i*3+c]];dst[i*4+3]=255;}
  CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
  CGImageRef cg=CGImageCreate(header[1],header[2],8,32,header[1]*4,cs,kCGImageAlphaNoneSkipLast,provider,NULL,false,kCGRenderingIntentDefault);
  UIImage*image=cg?[UIImage imageWithCGImage:cg]:nil;if(cg)CGImageRelease(cg);CGColorSpaceRelease(cs);CGDataProviderRelease(provider);return image;
