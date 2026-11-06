@@ -34,7 +34,10 @@ struct RenderEstimate {
         cancelWork=cancel
         if smoke {work();return "测试中"}
         if #available(iOS 26.0,*) {
-            let id=(Bundle.main.bundleIdentifier ?? "io.alpha1m2.photodenoise")+".render."+UUID().uuidString
+            // Sideload signing can change the bundle ID; use the permitted plist namespace.
+            let patterns=Bundle.main.object(forInfoDictionaryKey:"BGTaskSchedulerPermittedIdentifiers") as? [String]
+            let pattern=patterns?.first(where:{$0.hasSuffix(".render.*")}) ?? "io.alpha1m2.photodenoise.render.*"
+            let id=String(pattern.dropLast())+UUID().uuidString
             identifier=id;launchWork=work
             let registered=BGTaskScheduler.shared.register(forTaskWithIdentifier:id,using:nil) { [weak self] task in
                 Task{@MainActor in
