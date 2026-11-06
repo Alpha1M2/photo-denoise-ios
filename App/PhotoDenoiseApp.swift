@@ -119,7 +119,7 @@ import ImageIO
         guard let source,!busy,correctionAvailable else{return}
         engine.cancelled=false;busy=true;progress=0;message="正在校正显影，再进行 JPEG/RGB AI 降噪…"
         let temp=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".tiff")
-        let target=folder.appendingPathComponent("corrected-\(UUID().uuidString).jpg")
+        let target=folder.appendingPathComponent("corrected-\(UUID().uuidString).dng")
         let engine=self.engine,amount=Float(strength)
         UIApplication.shared.isIdleTimerDisabled=true
         DispatchQueue.global(qos:.userInitiated).async {
@@ -129,7 +129,7 @@ import ImageIO
                 if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
                 let output=try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in self.progress=value}})
                 let image=Self.thumbnail(output)
-                Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="JPEG 已就绪";self.reportSmoke(image != nil,self.message);UIApplication.shared.isIdleTimerDisabled=false}
+                Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="线性 DNG 已就绪";self.reportSmoke(image != nil,self.message);UIApplication.shared.isIdleTimerDisabled=false}
             }catch {Task{@MainActor in self.busy=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false}}
         }
     }
@@ -200,7 +200,7 @@ struct StudioView: View {
                                 Toggle("镜头校正",isOn:$model.correction)
                                 if !model.isRaw {Text("仅用于未经机内校正的 JPEG").font(.caption).foregroundStyle(.secondary)}
                             }
-                            Text("校正输出 JPEG；DNG 保留传感器几何。").font(.caption).foregroundStyle(.secondary)
+                            Text("校正输出 16 位线性 DNG；未校正输出 Bayer DNG。").font(.caption).foregroundStyle(.secondary)
                         }
                     }.disabled(model.busy).padding(.horizontal,20).padding(.bottom,12)
                 }.frame(maxHeight:.infinity)

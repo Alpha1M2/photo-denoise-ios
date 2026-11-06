@@ -38,6 +38,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  ORTSession*session=[[ORTSession alloc] initWithEnv:env modelPath:model sessionOptions:opts error:error];if(!session)return nil;
  NSString*inName=[[session inputNamesWithError:error] firstObject];NSString*outName=[[session outputNamesWithError:error] firstObject];if(!inName||!outName)return nil;
  int tile=raw?512:768, pad=32, core=tile-2*pad, channels=raw?4:3;
+ bool linear=!raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"];std::vector<float> rgbFloat;
  int width=0,height=0;std::unique_ptr<LibRaw> reader;std::vector<uint8_t> rgba;std::vector<uint16_t> output;
  int cx=0,cy=0;double wb[4]={1,1,1,1}, blacks[4]={}, ranges[4]={};
  CGColorSpaceRef color=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -66,7 +67,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    if(width<1||height<1||(double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"图片超过此版本的 6500 万像素限制。");return nil;}
    rgba.resize((size_t)width*height*4);
    CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO}];
-   [ctx render:ci toBitmap:rgba.data() rowBytes:width*4 bounds:rect format:kCIFormatRGBA8 colorSpace:color];
+   if(linear){rgbFloat.resize((size_t)width*height*4);output.resize((size_t)width*height*3);[ctx render:ci toBitmap:rgbFloat.data() rowBytes:width*4*sizeof(float) bounds:rect format:kCIFormatRGBAf colorSpace:color];}else [ctx render:ci toBitmap:rgba.data() rowBytes:width*4 bounds:rect format:kCIFormatRGBA8 colorSpace:color];
  }
  const int W=raw?width/2:width,H=raw?height/2:height;
  auto xs=starts(W,core),ys=starts(H,core);int done=0,total=(int)(xs.size()*ys.size());
@@ -79,11 +80,11 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
      int sx=mirror(tx+x-pad,W),sy=mirror(ty+y-pad,H);
      for(int c=0;c<channels;c++){
        float v;if(raw){int rx=cx+sx*2+c%2,ry=cy+sy*2+c/2;auto&s=reader->imgdata.sizes;unsigned short*row=(unsigned short*)((uint8_t*)reader->imgdata.rawdata.raw_image+(size_t)ry*s.raw_pitch);v=(row[rx]-blacks[c])/ranges[c]*wb[c];}
-       else v=original[((size_t)sy*width+sx)*4+c]/255.f;
+       else v=linear?rgbFloat[((size_t)sy*width+sx)*4+c]:original[((size_t)sy*width+sx)*4+c]/255.f;
        input[((size_t)c*tile+y)*tile+x]=v;sum+=v;
      }
    }
-   if(strength==0){
+   if(strength==0 && !linear){
      if(raw)for(int y=0;y<std::min(core,H-ty);y++)for(int x=0;x<std::min(core,W-tx);x++)for(int p=0;p<4;p++){
        double v=input[((size_t)p*tile+y+pad)*tile+x+pad]/wb[p];output[((size_t)(ty+y)*2+p/2)*width+(tx+x)*2+p%2]=(uint16_t)std::llround(std::clamp(v,0.,1.)*65535);
      }
@@ -104,7 +105,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
        output[((size_t)(ty+y)*2+p/2)*width+(tx+x)*2+p%2]=(uint16_t)std::llround(std::clamp(v,0.,1.)*65535);
      }}else for(int c=0;c<3;c++){
        float src=input[((size_t)c*tile+y+pad)*tile+x+pad];float den=pred[((size_t)c*tile+y+pad)*tile+x+pad];
-       rgba[((size_t)(ty+y)*width+tx+x)*4+c]=(uint8_t)std::lround(std::clamp(src+(den-src)*strength,0.f,1.f)*255);
+       float blended=std::clamp(src+(den-src)*strength,0.f,1.f);if(linear){double v=blended<=0.04045?blended/12.92:std::pow((blended+0.055)/1.055,2.4);output[((size_t)(ty+y)*width+tx+x)*3+c]=(uint16_t)std::llround(v*65535);}else rgba[((size_t)(ty+y)*width+tx+x)*4+c]=(uint8_t)std::lround(std::clamp(src+(den-src)*strength,0.f,1.f)*255);
      }
    }
    progress((double)++done/total);
@@ -114,6 +115,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    int flip=reader->imgdata.sizes.flip,orientation=flip==3?3:(flip==5?8:(flip==6?6:1));
    dng::Metadata meta;meta.lens=reader->imgdata.lens.Lens;meta.focal=reader->imgdata.other.focal_len;meta.aperture=reader->imgdata.other.aperture;meta.exposure=reader->imgdata.other.shutter;meta.iso=reader->imgdata.other.iso_speed;
    ok=dng::write(destination.fileSystemRepresentation,output,width,height,reader->imgdata.idata.make,reader->imgdata.idata.model,matrix,neutral,orientation,meta);
+ }else if(linear){double matrix[9]={3.2404542,-1.5371385,-0.4985314,-0.9692660,1.8760108,0.0415560,0.0556434,-0.2040259,1.0572252},neutral[3]={1,1,1};ok=dng::write(destination.fileSystemRepresentation,output,width,height,"JingYing","Linear sRGB",matrix,neutral,1,dng::Metadata(),true);
  }else{
    CGContextRef bitmap=CGBitmapContextCreate(rgba.data(),width,height,8,width*4,color,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrderDefault);CGImageRef im=bitmap?CGBitmapContextCreateImage(bitmap):nil;
    if(im){
