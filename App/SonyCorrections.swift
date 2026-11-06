@@ -48,15 +48,25 @@ struct SonyCorrections {
         return values[i]+(values[j]-values[i])*(x-Double(i))
     }
     static let kernel=CIKernel(source:"""
-    kernel vec4 sonyLens(sampler src,sampler lut,vec2 size,float zoom,float dist,float ca,float vig) {
+    float sonyCurve(float r,float n,vec4 a,vec4 b,vec4 c,vec4 d) {
+        float x=clamp(r*(n-1.0)-0.5,0.0,n-1.0);
+        return dot(a,max(vec4(0.0),vec4(1.0)-abs(vec4(x)-vec4(0.0,1.0,2.0,3.0))))
+             + dot(b,max(vec4(0.0),vec4(1.0)-abs(vec4(x)-vec4(4.0,5.0,6.0,7.0))))
+             + dot(c,max(vec4(0.0),vec4(1.0)-abs(vec4(x)-vec4(8.0,9.0,10.0,11.0))))
+             + dot(d,max(vec4(0.0),vec4(1.0)-abs(vec4(x)-vec4(12.0,13.0,14.0,15.0))));
+    }
+    kernel vec4 sonyLens(sampler src,vec2 size,float zoom,vec3 flags,vec4 counts,
+        vec4 d0,vec4 d1,vec4 d2,vec4 d3,vec4 r0,vec4 r1,vec4 r2,vec4 r3,
+        vec4 b0,vec4 b1,vec4 b2,vec4 b3,vec4 v0,vec4 v1,vec4 v2,vec4 v3) {
         vec2 c=size*0.5;vec2 p=(destCoord()-c)*zoom;float r=length(p)/length(c);
-        vec3 f=sample(lut,vec2(clamp(r/1.1,0.0,1.0)*1023.0+0.5,0.5)).rgb;
-        float d=mix(1.0,f.r,dist);float cr=mix(1.0,f.g,ca);float cb=mix(1.0,f.b,ca);
+        float d=mix(1.0,sonyCurve(r,counts.x,d0,d1,d2,d3),flags.x);
+        float cr=mix(1.0,sonyCurve(r,counts.y,r0,r1,r2,r3),flags.y);
+        float cb=mix(1.0,sonyCurve(r,counts.z,b0,b1,b2,b3),flags.y);
         vec4 g=sample(src,samplerTransform(src,c+p*d));
         float rr=sample(src,samplerTransform(src,c+p*d*cr)).r;
         float bb=sample(src,samplerTransform(src,c+p*d*cb)).b;
-        float gain=sample(lut,vec2(clamp(r*d/1.1,0.0,1.0)*1023.0+1024.5,0.5)).r;
-        return vec4(vec3(rr,g.g,bb)*mix(1.0,gain,vig),g.a);
+        float gain=sonyCurve(r*d,counts.w,v0,v1,v2,v3);
+        return vec4(vec3(rr,g.g,bb)*mix(1.0,gain,flags.z),g.a);
     }
     """)
     func apply(_ image:CIImage,options:LensRenderer.Options)throws->CIImage {
@@ -76,12 +86,14 @@ struct SonyCorrections {
         }
         var zoom=1.0
         if options.distortion || options.chromatic {var low=0.1,high=1.0;for _ in 0..<24 {let mid=(low+high)/2;if safe(mid){low=mid}else{high=mid}};zoom=low*0.999}
-        var lut=[Float](repeating:1,count:1024*2*4)
-        for i in 0..<1024 {let r=Double(i)/1023*1.1;lut[i*4]=Float(Self.sample(distortion,r));lut[i*4+1]=Float(Self.sample(red,r));lut[i*4+2]=Float(Self.sample(blue,r));let gain=Float(Self.sample(vignette,r));for c in 0..<3 {lut[(1024+i)*4+c]=gain}}
-        let data=lut.withUnsafeBytes{Data($0)}
-        let table=CIImage(bitmapData:data,bytesPerRow:2048*16,size:CGSize(width:2048,height:1),format:.RGBAf,colorSpace:CGColorSpace(name:CGColorSpace.linearSRGB))
+        let curves=[distortion,red,blue,vignette].map{$0 ?? Array(repeating:1.0,count:16)}
         let base=image.transformed(by:CGAffineTransform(translationX:-image.extent.minX,y:-image.extent.minY))
-        guard let result=kernel.apply(extent:base.extent,roiCallback:{index,_ in index==0 ? base.extent:table.extent},arguments:[base,table,CIVector(x:size.width,y:size.height),zoom,options.distortion ? 1.0:0.0,options.chromatic ? 1.0:0.0,options.vignetting ? 1.0:0.0]) else{throw LensRenderer.error("索尼镜头校正失败")}
+        var args:[Any]=[base,CIVector(x:size.width,y:size.height),zoom,CIVector(x:options.distortion ? 1:0,y:options.chromatic ? 1:0,z:options.vignetting ? 1:0),CIVector(x:Double(curves[0].count),y:Double(curves[1].count),z:Double(curves[2].count),w:Double(curves[3].count))]
+        for curve in curves {
+            let values=curve+Array(repeating:curve.last ?? 1,count:16-curve.count)
+            for i in stride(from:0,to:16,by:4){args.append(CIVector(x:values[i],y:values[i+1],z:values[i+2],w:values[i+3]))}
+        }
+        guard let result=kernel.apply(extent:base.extent,roiCallback:{_,_ in base.extent},arguments:args) else{throw LensRenderer.error("索尼镜头校正失败")}
         return result
     }
     static func selfTest()->String {
