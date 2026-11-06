@@ -187,12 +187,15 @@ import ImageIO
                     try autoreleasepool {
                         if localRaw && !correct {try DenoiseEngine.renderLinearRaw(source,destination:prepared);reference=DenoiseEngine.linearBufferPreview(prepared)}
                         else {
-                            var imageSource=source
-                            let optical=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".tiff")
-                            defer{try? FileManager.default.removeItem(at:optical)}
-                            if correct {try LensRenderer.renderCorrected(source,to:optical);imageSource=optical}
-                            reference=Self.thumbnail(imageSource)
-                            try DenoiseEngine.prepareImageBuffer(imageSource,destination:prepared,linear:localRaw)
+                            if correct {
+                                let image=try LensRenderer.correctedImage(source)
+                                try DenoiseEngine.prepareCIImage(image,destination:prepared,linear:localRaw)
+                                if localRaw {reference=DenoiseEngine.linearBufferPreview(prepared)}
+                                else if let cg=CIContext().createCGImage(image,from:image.extent) {reference=UIImage(cgImage:cg)}
+                            } else {
+                                reference=Self.thumbnail(source)
+                                try DenoiseEngine.prepareImageBuffer(source,destination:prepared,linear:localRaw)
+                            }
                         }
                     }
                     try? FileManager.default.setAttributes([.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication],ofItemAtPath:prepared.path)

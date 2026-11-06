@@ -49,7 +49,10 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands];
 }
  + (BOOL)prepareImageBuffer:(NSURL*)source destination:(NSURL*)destination linear:(BOOL)linear error:(NSError**)error {
- CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];if(!ci){if(error)*error=failure(@"无法读取图像");return NO;}
+ CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];if(!ci){if(error)*error=failure(@"无法读取输入图像，未能建立解码缓存。");return NO;}
+ return [self prepareCIImage:ci destination:destination linear:linear error:error];
+}
++ (BOOL)prepareCIImage:(CIImage*)ci destination:(NSURL*)destination linear:(BOOL)linear error:(NSError**)error {
  int w=ci.extent.size.width,h=ci.extent.size.height;if(w<1||h<1||(double)w*h>65000000){if(error)*error=failure(@"图像尺寸不支持");return NO;}
  CGColorSpaceRef cs=CGColorSpaceCreateWithName(linear?kCGColorSpaceLinearSRGB:kCGColorSpaceSRGB);
  CIContext*ctx=[CIContext contextWithOptions:@{kCIContextWorkingFormat:@(kCIFormatRGBAf),kCIContextCacheIntermediates:@NO}];

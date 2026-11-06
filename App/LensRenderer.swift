@@ -47,6 +47,11 @@ enum LensRenderer {
     }
     """)
     static func renderCorrected(_ source:URL,to destination:URL,correct:Bool=true) throws {
+        let result=try correctedImage(source,correct:correct)
+        let context=CIContext(options:[.cacheIntermediates:false,.workingFormat:CIFormat.RGBAf.rawValue])
+        try context.writeTIFFRepresentation(of:result,to:destination,format:.RGBA16,colorSpace:CGColorSpace(name:CGColorSpace.sRGB)!,options:[:])
+    }
+    static func correctedImage(_ source:URL,correct:Bool=true) throws -> CIImage {
         let meta=Metadata(source)
         var image:CIImage?
         var systemCorrected=false
@@ -71,8 +76,7 @@ enum LensRenderer {
             let inset=rect.insetBy(dx:w*0.04,dy:h*0.04)
             result=corrected.cropped(to:inset).transformed(by:CGAffineTransform(translationX:-inset.minX,y:-inset.minY))
         }
-        let context=CIContext(options:[.cacheIntermediates:false,.workingFormat:CIFormat.RGBAf.rawValue])
-        try context.writeTIFFRepresentation(of:result,to:destination,format:.RGBA16,colorSpace:CGColorSpace(name:CGColorSpace.sRGB)!,options:[:])
+        return result
     }
     static func error(_ message:String)->NSError{NSError(domain:"LensCorrection",code:1,userInfo:[NSLocalizedDescriptionKey:message])}
 }
