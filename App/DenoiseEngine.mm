@@ -6,6 +6,7 @@
 #include "libraw/libraw.h"
 #include "DNGWriter.hpp"
 #include <memory>
+#include <ctime>
 #include <cmath>
 static NSError *failure(NSString*s){return [NSError errorWithDomain:@"JingYing" code:1 userInfo:@{NSLocalizedDescriptionKey:s}];}
 // Metadata is read from the original import, never the prepared pixel buffer.
@@ -16,6 +17,8 @@ static dng::Metadata originalMetadata(NSURL *url,std::string &make,std::string &
   make=raw->imgdata.idata.make;model=raw->imgdata.idata.model;
   meta.lens=raw->imgdata.lens.Lens;meta.focal=raw->imgdata.other.focal_len;
   meta.aperture=raw->imgdata.other.aperture;meta.exposure=raw->imgdata.other.shutter;meta.iso=raw->imgdata.other.iso_speed;
+  meta.artist=raw->imgdata.other.artist;
+  if(raw->imgdata.other.timestamp>0){std::tm date{};time_t time=raw->imgdata.other.timestamp;char value[32]={};if(localtime_r(&time,&date)&&std::strftime(value,sizeof(value),"%Y:%m:%d %H:%M:%S",&date))meta.dateTime=value;}
  }
  CGImageSourceRef source=CGImageSourceCreateWithURL((__bridge CFURLRef)url,NULL);
  if(source){
@@ -51,9 +54,9 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  for(size_t i=0;i<(size_t)w*h;i++)f.write((char*)&pixels[i*4],6);BOOL ok=f.good();f.close();
  DenoiseEngine*engine=[DenoiseEngine new];engine.useLocalLinearModel=YES;
  NSURL*metadataURL=[src URLByAppendingPathExtension:@"dng"];
- std::vector<uint16_t> sensor(64*64,20000);double cm[9]={1,0,0,0,1,0,0,0,1},wb[3]={1,1,1};dng::Metadata fixture;
+ std::vector<uint16_t> sensor(768*768,20000);double cm[9]={1,0,0,0,1,0,0,0,1},wb[3]={1,1,1};dng::Metadata fixture;
  fixture.lens="Test 70-200mm";fixture.focal=135;fixture.aperture=2.8;fixture.exposure=.001;fixture.iso=12800;fixture.dateTime="2026:01:02 03:04:05";
- ok=ok&&dng::write(metadataURL.fileSystemRepresentation,sensor,64,64,"SONY","ILCE-1M2",cm,wb,1,fixture);
+ ok=ok&&dng::write(metadataURL.fileSystemRepresentation,sensor,768,768,"SONY","ILCE-1M2",cm,wb,1,fixture);
  engine.metadataSource=metadataURL;
  if(ok)ok=[engine process:src destination:dst strength:1 raw:NO preview:NO center:CGPointZero progress:^(double v){} error:nil]!=nil;
  NSData*out=[NSData dataWithContentsOfURL:dst];size_t length=(size_t)w*h*6;
