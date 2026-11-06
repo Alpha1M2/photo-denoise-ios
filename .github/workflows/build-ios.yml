@@ -1,0 +1,39 @@
+name: Build iPhone denoiser
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare dependencies
+        run: |
+          brew install xcodegen autoconf automake libtool
+          python3 Scripts/prepare.py
+          bash Scripts/build-libraw.sh
+          xcodegen generate
+          pod install
+      - name: Compile device app
+        run: |
+          set -o pipefail
+          xcodebuild -workspace PhotoDenoise.xcworkspace -scheme PhotoDenoise -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tee build.log
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p package/Payload
+          cp -R build/Build/Products/Release-iphoneos/PhotoDenoise.app package/Payload/
+          cd package
+          zip -qr ../PhotoDenoise-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoDenoise-unsigned
+          path: PhotoDenoise-unsigned.ipa
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log

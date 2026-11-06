@@ -1,0 +1,11 @@
+Research/
+Vendor/
+Pods/
+build/
+*.xcworkspace/
+*.xcodeproj/
+Models/*.onnx
+*.ipa
+*.log
+local-*
+Scripts/cloud.py

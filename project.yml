@@ -1,0 +1,33 @@
+name: PhotoDenoise
+options:
+  deploymentTarget:
+    iOS: '17.0'
+targets:
+  PhotoDenoise:
+    type: application
+    platform: iOS
+    sources: [App]
+    resources: [Models]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.alpha1m2.photodenoise
+        SWIFT_VERSION: '5.0'
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
+        SWIFT_OBJC_BRIDGING_HEADER: App/Bridge.h
+        HEADER_SEARCH_PATHS: '$(inherited) $(SRCROOT)/Vendor/LibRaw'
+        LIBRARY_SEARCH_PATHS: '$(inherited) $(SRCROOT)/Vendor/lib'
+        OTHER_LDFLAGS: '$(inherited) -lraw -lc++'
+        CODE_SIGNING_ALLOWED: NO
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: 净影
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        MARKETING_VERSION: '0.1.0'
+        CURRENT_PROJECT_VERSION: '1'
+        TARGETED_DEVICE_FAMILY: '1,2'
+    dependencies:
+      - sdk: CoreImage.framework
+      - sdk: ImageIO.framework
+      - sdk: Accelerate.framework
