@@ -25,8 +25,12 @@ inline std::vector<uint8_t> ifd(std::vector<Tag> ts,uint32_t base){
  u32(b,0);b.insert(b.end(),extra.begin(),extra.end());while((base+b.size())%4)b.push_back(0);return b;
 }
 inline bool write(const char*path,const std::vector<uint16_t>&pixels,int w,int h,
- const std::string&make,const std::string&model,const double*matrix,const double*neutral,int orientation,const Metadata&meta=Metadata()){
+ const std::string&make,const std::string&model,const double*matrix,const double*neutral,int orientation,const Metadata&meta=Metadata(),bool linear=false){
  std::vector<Tag> ts={nums(254,4,{0}),nums(256,4,{(uint32_t)w}),nums(257,4,{(uint32_t)h}),nums(258,3,{16}),nums(259,3,{1}),nums(262,3,{32803}),str(271,make),str(272,model),nums(273,4,{0}),nums(274,3,{(uint32_t)orientation}),nums(277,3,{1}),nums(278,4,{(uint32_t)h}),nums(279,4,{(uint32_t)pixels.size()*2}),nums(284,3,{1}),str(305,"JingYing 0.1 / RawNIND"),nums(33421,3,{2,2}),nums(33422,1,{0,1,1,2}),nums(50706,1,{1,4,0,0}),nums(50707,1,{1,3,0,0}),str(50708,make+" "+model),nums(50710,1,{0,1,2}),nums(50711,3,{1}),nums(50713,3,{1,1}),rational(50714,{0}),nums(50717,4,{65535}),rational(50718,{1,1}),nums(50719,4,{0,0}),nums(50720,4,{(uint32_t)w,(uint32_t)h}),rational(50721,std::vector<double>(matrix,matrix+9),true),rational(50728,std::vector<double>(neutral,neutral+3)),nums(50778,3,{21})};
+ if(linear){
+  ts.erase(std::remove_if(ts.begin(),ts.end(),[](const Tag&t){return t.id==33421||t.id==33422||t.id==50710||t.id==50711;}),ts.end());
+  for(auto&t:ts){if(t.id==262)t=nums(262,3,{34892});if(t.id==258)t=nums(258,3,{16,16,16});if(t.id==277)t=nums(277,3,{3});}
+ }
  std::vector<Tag> exif;
  if(!meta.lens.empty())exif.push_back(str(42036,meta.lens));
  if(meta.focal>0)exif.push_back(rational(37386,{meta.focal}));
