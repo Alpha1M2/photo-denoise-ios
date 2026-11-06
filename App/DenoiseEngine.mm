@@ -11,6 +11,17 @@ static NSError *failure(NSString*s){return [NSError errorWithDomain:@"JingYing" 
 static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0)n=-n;if(n>=size)n=2*size-2-n;}return n;}
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @implementation DenoiseEngine
++ (UIImage*)rawPreview:(NSURL*)url {
+ LibRaw reader;reader.imgdata.params.half_size=1;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
+ if(reader.open_file(url.fileSystemRepresentation)||reader.unpack()||reader.dcraw_process())return nil;
+ int rc=0;libraw_processed_image_t*p=reader.dcraw_make_mem_image(&rc);
+ if(!p||rc||p->type!=LIBRAW_IMAGE_BITMAP||p->colors!=3||p->bits!=8){if(p)LibRaw::dcraw_clear_mem(p);return nil;}
+ NSData*data=[NSData dataWithBytes:p->data length:p->data_size];
+ CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)data);CGColorSpaceRef space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+ CGImageRef cg=CGImageCreate(p->width,p->height,8,24,p->width*3,space,kCGImageAlphaNone,provider,NULL,false,kCGRenderingIntentDefault);
+ UIImage*image=cg?[UIImage imageWithCGImage:cg]:nil;
+ if(cg)CGImageRelease(cg);CGColorSpaceRelease(space);CGDataProviderRelease(provider);LibRaw::dcraw_clear_mem(p);return image;
+}
 + (BOOL)writeSmokeRaw:(NSURL*)url {
  double m[9]={.8161,-.2947,-.0739,-.4811,1.2668,.2389,-.0437,.1229,.6524};double n[3]={1024./1871,1,1024./2244};std::vector<uint16_t> p(128*128,8192);
  return dng::write(url.fileSystemRepresentation,p,128,128,"SONY","ILCE-1M2",m,n,1);

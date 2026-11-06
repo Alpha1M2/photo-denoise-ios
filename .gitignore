@@ -10,3 +10,4 @@ Models/*.onnx
 local-*
 Scripts/cloud.py
 __pycache__/
+outputs/

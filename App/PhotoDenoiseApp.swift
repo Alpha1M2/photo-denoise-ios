@@ -81,7 +81,7 @@ import ImageIO
             let small = image.transformed(by: CGAffineTransform(scaleX: scale,y: scale))
             if let cg = CIContext().createCGImage(small, from: small.extent) { return UIImage(cgImage: cg) }
         }
-        return nil
+        return DenoiseEngine.rawPreview(url)
     }
     func run(preview: Bool) {
         guard let source, !busy else { return }
