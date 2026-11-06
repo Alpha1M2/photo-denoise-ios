@@ -26,9 +26,12 @@ import ImageIO
     let engine = DenoiseEngine()
     var isRaw: Bool { ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
     let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
+    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-linear") || ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
     init() {
         if smoke { Task { @MainActor in
+            if ProcessInfo.processInfo.arguments.contains("--smoke-linear") {
+                DispatchQueue.global().async {let ok=DenoiseEngine.testLinearFixture();Task{@MainActor in self.reportSmoke(ok,"Linear fixture: transfer, tile coordinates and DNG pixel roundtrip")}};return
+            }
             let raw=ProcessInfo.processInfo.arguments.contains("--smoke-raw")
             let url=FileManager.default.temporaryDirectory.appendingPathComponent(raw ? "synthetic.dng" : "synthetic.jpg")
             if raw { _=DenoiseEngine.writeSmokeRaw(url) }

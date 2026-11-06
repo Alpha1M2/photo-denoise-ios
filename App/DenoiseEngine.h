@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)hasLocalLinearModel;
 + (BOOL)renderLinearRaw:(NSURL *)source destination:(NSURL *)destination error:(NSError **)error;
 + (BOOL)writeSmokeRaw:(NSURL *)url;
++ (BOOL)testLinearFixture;
 + (nullable UIImage *)rawPreview:(NSURL *)url;
 // Each invocation is serial. File results use a fresh destination; originals never overwritten.
 - (nullable NSURL *)process:(NSURL *)source destination:(NSURL *)destination
