@@ -11,6 +11,10 @@ static NSError *failure(NSString*s){return [NSError errorWithDomain:@"JingYing" 
 static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0)n=-n;if(n>=size)n=2*size-2-n;}return n;}
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @implementation DenoiseEngine
++ (BOOL)writeSmokeRaw:(NSURL*)url {
+ double m[9]={.8161,-.2947,-.0739,-.4811,1.2668,.2389,-.0437,.1229,.6524};double n[3]={1024./1871,1,1024./2244};std::vector<uint16_t> p(128*128,8192);
+ return dng::write(url.fileSystemRepresentation,p,128,128,"SONY","ILCE-1M2",m,n,1);
+}
 - (NSURL*)process:(NSURL*)source destination:(NSURL*)destination strength:(float)strength raw:(BOOL)raw preview:(BOOL)preview center:(CGPoint)center progress:(void(^)(double))progress error:(NSError**)error {
  strength=std::clamp(strength,0.f,1.f);
  if([[NSFileManager defaultManager] fileExistsAtPath:destination.path]){if(error)*error=failure(@"输出文件已存在，请使用新文件名。");return nil;}

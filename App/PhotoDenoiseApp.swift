@@ -27,6 +27,29 @@ import ImageIO
     let engine = DenoiseEngine()
     var isRaw: Bool { ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
     let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw")
+    init() {
+        if smoke { Task { @MainActor in
+            let raw=ProcessInfo.processInfo.arguments.contains("--smoke-raw")
+            let url=FileManager.default.temporaryDirectory.appendingPathComponent(raw ? "synthetic.dng" : "synthetic.jpg")
+            if raw { _=DenoiseEngine.writeSmokeRaw(url) }
+            else {
+                let format=UIGraphicsImageRendererFormat();format.scale=1
+                let image=UIGraphicsImageRenderer(size:CGSize(width:768,height:768),format:format).image { ctx in
+                    UIColor.darkGray.setFill();ctx.fill(CGRect(x:0,y:0,width:768,height:768))
+                    for y in 0..<96 {for x in 0..<96 {let v=CGFloat((x*17+y*31)%51)/255+0.25;UIColor(white:v,alpha:1).setFill();ctx.fill(CGRect(x:x*8,y:y*8,width:8,height:8))}}
+                    ("LOCAL TEST / JPEG" as NSString).draw(at:CGPoint(x:60,y:360),withAttributes:[.font:UIFont.boldSystemFont(ofSize:42),.foregroundColor:UIColor.white])
+                }
+                try? image.jpegData(compressionQuality:1)?.write(to:url)
+            }
+            load(url);run(preview:true)
+        } }
+    }
+    func reportSmoke(_ ok:Bool,_ text:String) {
+        guard smoke else{return}
+        let data=try? JSONSerialization.data(withJSONObject:["ok":ok,"message":text])
+        try? data?.write(to:folder.appendingPathComponent("smoke-status.json"),options:.atomic)
+    }
     func load(_ url: URL) {
         guard !busy else { return }
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -82,9 +105,10 @@ import ImageIO
                 Task { @MainActor in
                     self.after=image; self.result=preview ? nil : output; self.busy=false
                     self.message="完成，用时 \(Int(Date().timeIntervalSince(start))) 秒。\(preview ? "这是局部预览，尚未导出全图。" : "原片保留，可分享导出。")"
+                    self.reportSmoke(image != nil,self.message)
                     UIApplication.shared.isIdleTimerDisabled=false
                 }
-            } catch { Task { @MainActor in self.busy=false;self.message=error.localizedDescription;UIApplication.shared.isIdleTimerDisabled=false } }
+            } catch { Task { @MainActor in self.busy=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false } }
         }
     }
     func correctedJPEG() {

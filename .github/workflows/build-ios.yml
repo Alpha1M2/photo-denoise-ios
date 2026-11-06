@@ -23,15 +23,30 @@ jobs:
           xcodebuild -workspace PhotoDenoise.xcworkspace -scheme PhotoDenoise -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tee build.log
       - name: Package unsigned IPA
         run: |
+          test -s build/Build/Products/Release-iphoneos/PhotoDenoise.app/raw.onnx
+          test -s build/Build/Products/Release-iphoneos/PhotoDenoise.app/rgb.onnx
+          test -s build/Build/Products/Release-iphoneos/PhotoDenoise.app/sony24105.json
           mkdir -p package/Payload
           cp -R build/Build/Products/Release-iphoneos/PhotoDenoise.app package/Payload/
           cd package
           zip -qr ../PhotoDenoise-unsigned.ipa Payload
+      - name: Build simulator and run synthetic RAW and JPEG tests
+        run: |
+          bash Scripts/build-libraw.sh simulator
+          xcodebuild -workspace PhotoDenoise.xcworkspace -scheme PhotoDenoise -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=$(uname -m) -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO build > simulator-build.log 2>&1
+          python3 Scripts/simulator-smoke.py
       - uses: actions/upload-artifact@v4
         with:
           name: PhotoDenoise-unsigned
           path: PhotoDenoise-unsigned.ipa
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-check
+          path: |
+            simulator-build.log
+            smoke-output/
       - uses: actions/upload-artifact@v4
         if: always()
         with:

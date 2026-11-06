@@ -6,8 +6,10 @@ targets:
   PhotoDenoise:
     type: application
     platform: iOS
-    sources: [App]
-    resources: [Models]
+    sources:
+      - path: App
+      - path: Models
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.alpha1m2.photodenoise
