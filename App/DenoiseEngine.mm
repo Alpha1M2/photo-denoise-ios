@@ -91,7 +91,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  NSData*preparedData=[NSData dataWithContentsOfURL:prepared];if(preparedData.length!=12+(size_t)w*h*6)bands=NO;
  if(bands){const uint16_t*p=(const uint16_t*)((const uint8_t*)preparedData.bytes+12);for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++)if(std::abs((int)p[i*3+c]-(int)expected[i*4+c])>1)bands=NO;}
  CGColorSpaceRelease(cs);[[NSFileManager defaultManager] removeItemAtURL:tiff error:nil];[[NSFileManager defaultManager] removeItemAtURL:prepared error:nil];passed=passed&&bands;
- [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d display=%d decode=%d metadata=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands,displayOK,decodeOK,metadataOK];
+ [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d display=%d decode=%d metadata=%d properties=%@",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands,displayOK,decodeOK,metadataOK,properties];
 }
  + (BOOL)prepareImageBuffer:(NSURL*)source destination:(NSURL*)destination linear:(BOOL)linear error:(NSError**)error {
  CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];if(!ci){if(error)*error=failure(@"无法读取输入图像，未能建立解码缓存。");return NO;}
