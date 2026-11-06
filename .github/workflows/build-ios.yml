@@ -32,6 +32,11 @@ jobs:
           zip -qr ../PhotoDenoise-unsigned.ipa Payload
       - name: Build simulator and run synthetic RAW and JPEG tests
         run: |
+          python3 -m venv /tmp/fixture-env
+          /tmp/fixture-env/bin/pip install onnx
+          /tmp/fixture-env/bin/python Scripts/make-linear-fixture.py
+          xcodegen generate
+          pod install
           bash Scripts/build-libraw.sh simulator
           xcodebuild -workspace PhotoDenoise.xcworkspace -scheme PhotoDenoise -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ARCHS=$(uname -m) -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO build > simulator-build.log 2>&1
           python3 Scripts/simulator-smoke.py

@@ -11,6 +11,19 @@ static NSError *failure(NSString*s){return [NSError errorWithDomain:@"JingYing" 
 static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0)n=-n;if(n>=size)n=2*size-2-n;}return n;}
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @implementation DenoiseEngine
++ (BOOL)hasLocalLinearModel {return [[NSBundle mainBundle] pathForResource:@"local-linear" ofType:@"onnx"] != nil;}
++ (BOOL)renderLinearRaw:(NSURL*)source destination:(NSURL*)destination error:(NSError**)error {
+ auto reader=std::make_unique<LibRaw>();auto&p=reader->imgdata.params;p.use_camera_wb=1;p.no_auto_bright=1;p.output_color=1;p.output_bps=16;p.gamm[0]=1;p.gamm[1]=1;
+ int rc=reader->open_file(source.fileSystemRepresentation);if(!rc)rc=reader->unpack();if(!rc)rc=reader->dcraw_process();
+ if(rc){if(error)*error=failure(@"RAW 线性解码失败");return NO;}
+ libraw_processed_image_t*im=reader->dcraw_make_mem_image(&rc);
+ if(!im||rc||im->colors!=3||im->bits!=16){if(im)LibRaw::dcraw_clear_mem(im);if(error)*error=failure(@"RAW 线性输出格式不支持");return NO;}
+ int w=im->width,h=im->height;NSMutableData*rgba=[NSMutableData dataWithLength:(size_t)w*h*8];auto*dst=(uint16_t*)rgba.mutableBytes;auto*src=(uint16_t*)im->data;
+ for(size_t i=0;i<(size_t)w*h;i++){for(int c=0;c<3;c++)dst[i*4+c]=src[i*3+c];dst[i*4+3]=65535;}
+ LibRaw::dcraw_clear_mem(im);reader.reset();CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
+ CIImage*ci=[CIImage imageWithBitmapData:rgba bytesPerRow:w*8 size:CGSizeMake(w,h) format:kCIFormatRGBA16 colorSpace:cs];
+ CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO}];BOOL ok=[ctx writeTIFFRepresentationOfImage:ci toURL:destination format:kCIFormatRGBA16 colorSpace:cs options:@{} error:error];CGColorSpaceRelease(cs);return ok;
+}
 + (UIImage*)rawPreview:(NSURL*)url {
  auto owner=std::make_unique<LibRaw>();auto&reader=*owner;reader.imgdata.params.half_size=0;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
  if(reader.open_file(url.fileSystemRepresentation)||reader.unpack()||reader.dcraw_process())return nil;
@@ -30,7 +43,8 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(self.cancelled){if(error)*error=failure(@"已取消");return nil;}
  strength=std::clamp(strength,0.f,1.f);
  if([[NSFileManager defaultManager] fileExistsAtPath:destination.path]){if(error)*error=failure(@"输出文件已存在，请使用新文件名。");return nil;}
- NSString*model=[[NSBundle mainBundle] pathForResource:raw?@"raw":@"rgb" ofType:@"onnx"];
+ BOOL localLinear=self.useLocalLinearModel && !raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"] && [DenoiseEngine hasLocalLinearModel];
+ NSString*model=[[NSBundle mainBundle] pathForResource:localLinear?@"local-linear":(raw?@"raw":@"rgb") ofType:@"onnx"];
  if(!model){if(error)*error=failure(@"安装包缺少 AI 模型。");return nil;}
  ORTEnv*env=[[ORTEnv alloc] initWithLoggingLevel:ORTLoggingLevelWarning error:error];if(!env)return nil;
  ORTSessionOptions*opts=[[ORTSessionOptions alloc] initWithError:error];if(!opts)return nil;
@@ -38,11 +52,11 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  // Conservative CPU baseline; accelerator support must pass device testing before enabled by default.
  ORTSession*session=[[ORTSession alloc] initWithEnv:env modelPath:model sessionOptions:opts error:error];if(!session)return nil;
  NSString*inName=[[session inputNamesWithError:error] firstObject];NSString*outName=[[session outputNamesWithError:error] firstObject];if(!inName||!outName)return nil;
- int tile=raw?512:768, pad=32, core=tile-2*pad, channels=raw?4:3;
- bool linear=!raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"];std::vector<float> rgbFloat;
+ int tile=localLinear?512:(raw?512:768), pad=localLinear?112:32, core=tile-2*pad, channels=raw?4:3;
+ bool linear=!raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"];std::vector<uint16_t> rgb16;
  int width=0,height=0;std::unique_ptr<LibRaw> reader;std::vector<uint8_t> rgba;std::vector<uint16_t> output;
  int cx=0,cy=0;double wb[4]={1,1,1,1}, blacks[4]={}, ranges[4]={};
- CGColorSpaceRef color=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+ CGColorSpaceRef color=CGColorSpaceCreateWithName(localLinear?kCGColorSpaceLinearSRGB:kCGColorSpaceSRGB);
  if(raw){
    reader=std::make_unique<LibRaw>();int rc=reader->open_file(source.fileSystemRepresentation);if(!rc)rc=reader->unpack();
    if(rc || !reader->imgdata.rawdata.raw_image || reader->imgdata.idata.filters==9 || reader->imgdata.idata.filters==0){CGColorSpaceRelease(color);if(error)*error=failure(@"此 RAW 格式尚不支持，或解码失败。请保留原片。");return nil;}
@@ -60,15 +74,15 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    if((double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"RAW 超过6500万像素限制。");return nil;}
    output.resize((size_t)width*height);
  }else{
-   CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES,kCIImageColorSpace:(__bridge id)color}];
+   CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];
    if(!ci){CGColorSpaceRelease(color);if(error)*error=failure(@"无法读取图片。");return nil;}
    CGRect rect=ci.extent;
    if(preview){CGFloat w=MIN(1024,rect.size.width),h=MIN(1024,rect.size.height);rect=CGRectMake(MAX(0,MIN(rect.size.width-w,center.x*rect.size.width-w/2)),MAX(0,MIN(rect.size.height-h,(1-center.y)*rect.size.height-h/2)),w,h);}
    width=rect.size.width;height=rect.size.height;
    if(width<1||height<1||(double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"图片超过此版本的 6500 万像素限制。");return nil;}
-   rgba.resize((size_t)width*height*4);
+   if(!linear)rgba.resize((size_t)width*height*4);
    CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO}];
-   if(linear){rgbFloat.resize((size_t)width*height*4);output.resize((size_t)width*height*3);[ctx render:ci toBitmap:rgbFloat.data() rowBytes:width*4*sizeof(float) bounds:rect format:kCIFormatRGBAf colorSpace:color];}else [ctx render:ci toBitmap:rgba.data() rowBytes:width*4 bounds:rect format:kCIFormatRGBA8 colorSpace:color];
+   if(linear){rgb16.resize((size_t)width*height*4);output.resize((size_t)width*height*3);[ctx render:ci toBitmap:rgb16.data() rowBytes:width*4*sizeof(uint16_t) bounds:rect format:kCIFormatRGBA16 colorSpace:color];}else [ctx render:ci toBitmap:rgba.data() rowBytes:width*4 bounds:rect format:kCIFormatRGBA8 colorSpace:color];
  }
  const int W=raw?width/2:width,H=raw?height/2:height;
  auto xs=starts(W,core),ys=starts(H,core);int done=0,total=(int)(xs.size()*ys.size());
@@ -82,7 +96,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
      int sx=mirror(tx+x-pad,W),sy=mirror(ty+y-pad,H);
      for(int c=0;c<channels;c++){
        float v;if(raw){int rx=cx+sx*2+c%2,ry=cy+sy*2+c/2;auto&s=reader->imgdata.sizes;unsigned short*row=(unsigned short*)((uint8_t*)reader->imgdata.rawdata.raw_image+(size_t)ry*s.raw_pitch);v=(row[rx]-blacks[c])/ranges[c]*wb[c];}
-       else v=linear?rgbFloat[((size_t)sy*width+sx)*4+c]:original[((size_t)sy*width+sx)*4+c]/255.f;
+       else v=linear?rgb16[((size_t)sy*width+sx)*4+c]/65535.f:original[((size_t)sy*width+sx)*4+c]/255.f;
        input[((size_t)c*tile+y)*tile+x]=v;sum+=v;
      }
    }
@@ -94,7 +108,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    }
    ORTValue*value=[[ORTValue alloc] initWithTensorData:data elementType:ORTTensorElementDataTypeFloat shape:@[@1,@(channels),@(tile),@(tile)] error:error];if(!value){CGColorSpaceRelease(color);return nil;}
    NSDictionary*values=[session runWithInputs:@{inName:value} outputNames:[NSSet setWithObject:outName] runOptions:nil error:error];if(!values){CGColorSpaceRelease(color);return nil;}
-   NSMutableData*result=[values[outName] tensorDataWithError:error];int outTile=raw?tile*2:tile;
+   NSMutableData*result=[values[outName] tensorDataWithError:error];int outTile=localLinear?core:(raw?tile*2:tile);
    if(!result||result.length!=(size_t)3*outTile*outTile*4){CGColorSpaceRelease(color);if(error)*error=failure(@"AI 输出尺寸不匹配。");return nil;}
    float*pred=(float*)result.mutableBytes;double gain=1;
    if(raw){double outSum=0;for(size_t i=0;i<result.length/4;i++)outSum+=pred[i];double inMean=sum/(channels*tile*tile),outMean=outSum/(3*outTile*outTile);if(std::abs(outMean)>std::abs(inMean)*1e-6)gain=inMean/outMean;}
@@ -106,8 +120,8 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
        double v=src+(den-src)*strength;
        output[((size_t)(ty+y)*2+p/2)*width+(tx+x)*2+p%2]=(uint16_t)std::llround(std::clamp(v,0.,1.)*65535);
      }}else for(int c=0;c<3;c++){
-       float src=input[((size_t)c*tile+y+pad)*tile+x+pad];float den=pred[((size_t)c*tile+y+pad)*tile+x+pad];
-       float blended=std::clamp(src+(den-src)*strength,0.f,1.f);if(linear){double v=blended<=0.04045?blended/12.92:std::pow((blended+0.055)/1.055,2.4);output[((size_t)(ty+y)*width+tx+x)*3+c]=(uint16_t)std::llround(v*65535);}else rgba[((size_t)(ty+y)*width+tx+x)*4+c]=(uint8_t)std::lround(std::clamp(src+(den-src)*strength,0.f,1.f)*255);
+       float src=input[((size_t)c*tile+y+pad)*tile+x+pad];float den=localLinear?pred[((size_t)c*core+y)*core+x]:pred[((size_t)c*tile+y+pad)*tile+x+pad];
+       float blended=std::clamp(src+(den-src)*strength,0.f,1.f);if(linear){double v=localLinear?blended:(blended<=0.04045?blended/12.92:std::pow((blended+0.055)/1.055,2.4));output[((size_t)(ty+y)*width+tx+x)*3+c]=(uint16_t)std::llround(v*65535);}else rgba[((size_t)(ty+y)*width+tx+x)*4+c]=(uint8_t)std::lround(std::clamp(src+(den-src)*strength,0.f,1.f)*255);
      }
    }
    progress((double)++done/total);

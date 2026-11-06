@@ -1,4 +1,4 @@
-// Small uncompressed Bayer DNG writer. Values are black-subtracted, scaled to 16-bit.
+// Uncompressed Bayer or linear RGB DNG writer. Values are scaled to 16-bit.
 // No raw sensor geometry warping. Raw camera-space color and as-shot white balance retained.
 #pragma once
 #include <vector>

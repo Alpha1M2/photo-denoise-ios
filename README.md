@@ -6,9 +6,9 @@ Personal offline iPhone RAW and JPEG AI denoiser. Target: iPhone 14 Pro Max, iOS
 
 - LibRaw 0.22.3 Bayer decoding → RawNIND Bayer model → sensor-space strength blend → uncompressed 16-bit CFA DNG.
 - ImageIO/Core Image JPEG decoding → NIND RGB model → strength blend → sRGB JPEG.
-- Serial overlapped tiles, reflected borders, user cancellation between inference calls, 1024-pixel ROI test and full-size processing.
+- Serial overlapped tiles, reflected borders, user cancellation between inference calls, full-size processing, free pan/zoom and comparison without viewport reset.
 - CPU baseline with two inference threads. Neural Engine performance is not claimed. Keep the app in the foreground during processing.
-- Default strength 35%; no sharpening applied. Full-strength denoising can remove real aircraft details.
+- Default strength 20%; no sharpening applied. Full-strength denoising can remove real aircraft details.
 - Output filenames are unique. Original source files are never overwritten; imports are copied to app Documents.
 
 ## Lens correction
@@ -32,3 +32,9 @@ App source: GPL-3.0-or-later. Model and third-party licenses are described in `T
 ## Mobile workflow acceptance
 
 Target: Sony A1 II ARW → denoise and optical correction → linear DNG → native Photos → Snapseed. The requested device reports iOS 27.3. Device Photos and Snapseed compatibility has not been verified. The app includes direct PhotoKit original-file saving; permission is requested only when saving. Simulator decoder success is not equivalent to physical device workflow acceptance.
+
+## Optional local linear model (0.3)
+
+A locally supplied `local-linear.onnx` enables an experimental RAW route: neutral demosaic (camera white balance, no automatic brightness, linear sRGB), FP32 inference and strength blending in linear light, then 16-bit linear DNG. The tensor contract is NCHW float32 RGB, 512x512 input and central 288x288 output, with 112-pixel reflected context. JPEG without correction still uses NIND.
+
+No proprietary model or extraction tooling is included in this repository or CI artifacts. The optional backend is not a claim of Lightroom equivalence. Linear sRGB rendering bakes in demosaic and white balance and clips to the output gamut/range; it does not retain all original sensor editing latitude. Public CI uses an independently generated crop-only fixture exclusively in its simulator bundle to test this route, not to demonstrate denoising quality.

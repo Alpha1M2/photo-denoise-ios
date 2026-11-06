@@ -64,7 +64,7 @@ import ImageIO
                 };return
             }
             load(url)
-            if ProcessInfo.processInfo.arguments.contains("--smoke-lens"){correctedJPEG()}else{run()}
+            if ProcessInfo.processInfo.arguments.contains("--smoke-lens"){correction=true;correctedJPEG()}else{run()}
         } }
     }
     func reportSmoke(_ ok:Bool,_ text:String) {
@@ -101,13 +101,22 @@ import ImageIO
         }
         return DenoiseEngine.rawPreview(url)
     }
+    nonisolated static func linearThumbnail(_ url:URL)->UIImage? {
+        guard let raw=CIRAWFilter(imageURL:url) else{return thumbnail(url)}
+        raw.baselineExposure=0;raw.exposure=0;raw.boostAmount=0;raw.boostShadowAmount=0;raw.localToneMapAmount=0
+        raw.contrastAmount=0;raw.detailAmount=0;raw.sharpnessAmount=0;raw.moireReductionAmount=0
+        raw.luminanceNoiseReductionAmount=0;raw.colorNoiseReductionAmount=0;raw.isLensCorrectionEnabled=false
+        guard let image=raw.outputImage,let cg=CIContext().createCGImage(image,from:image.extent) else{return nil}
+        return UIImage(cgImage:cg)
+    }
     func cancel() {
         guard busy,!cancelling else{return}
         cancelling=true;engine.cancelled=true;message="正在取消…"
     }
     func run() {
         guard let source,!busy else{return}
-        if correction && correctionAvailable {correctedJPEG();return}
+        if (isRaw && DenoiseEngine.hasLocalLinearModel()) || (correction && correctionAvailable) {correctedJPEG();return}
+        engine.useLocalLinearModel=false
         engine.cancelled=false;cancelling=false;busy=true;progress=0
         message="正在降噪…"
         let raw=isRaw,amount=Float(strength),engine=self.engine
@@ -143,21 +152,26 @@ import ImageIO
         }
     }
     func correctedJPEG() {
-        guard let source,!busy,correctionAvailable else{return}
-        engine.cancelled=false;cancelling=false;busy=true;progress=0;message="正在校正显影，再进行 JPEG/RGB AI 降噪…"
+        guard let source,!busy else{return}
+        engine.cancelled=false;cancelling=false;busy=true;progress=0;message="正在处理线性 RAW…"
         let temp=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".tiff")
         let target=folder.appendingPathComponent("corrected-\(UUID().uuidString).dng")
-        let engine=self.engine,amount=Float(strength)
+        let engine=self.engine,amount=Float(strength),applyCorrection=correction && correctionAvailable,isRawInput=isRaw
+        engine.useLocalLinearModel=isRawInput
         UIApplication.shared.isIdleTimerDisabled=true
         DispatchQueue.global(qos:.userInitiated).async {
             defer {try? FileManager.default.removeItem(at:temp)}
             do {
-                try LensRenderer.renderCorrected(source,to:temp)
+                try autoreleasepool {
+                    if isRawInput && !applyCorrection {try DenoiseEngine.renderLinearRaw(source,destination:temp)}
+                    else {try LensRenderer.renderCorrected(source,to:temp,correct:applyCorrection)}
+                }
                 if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
                 let output=try autoreleasepool {try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in if !self.cancelling {self.progress=value}}})}
                 if engine.cancelled {try? FileManager.default.removeItem(at:output);throw LensRenderer.error("已取消")}
-                let image=Self.thumbnail(output)
-                Task{@MainActor in guard !engine.cancelled else{try? FileManager.default.removeItem(at:output);self.busy=false;self.cancelling=false;self.message="已取消";UIApplication.shared.isIdleTimerDisabled=false;return};self.after=image;self.result=output;self.busy=false;self.cancelling=false;self.message="线性 DNG 已就绪";if self.smoke {
+                let reference=Self.thumbnail(temp)
+                let image=Self.linearThumbnail(output)
+                Task{@MainActor in guard !engine.cancelled else{try? FileManager.default.removeItem(at:output);self.busy=false;self.cancelling=false;self.message="已取消";UIApplication.shared.isIdleTimerDisabled=false;return};self.before=reference;self.after=image;self.result=output;self.busy=false;self.cancelling=false;self.message="线性 DNG 已就绪";if self.smoke {
                     let apple=CIRAWFilter(imageURL:output)?.outputImage
                     self.reportSmoke(apple != nil && image != nil,apple == nil ? "Apple RAW decoder rejected linear DNG" : self.message)
                 };UIApplication.shared.isIdleTimerDisabled=false}
@@ -215,7 +229,7 @@ struct StudioView: View {
                 ScrollView {
                     VStack(alignment:.leading,spacing:14) {
                         if panel==0 {
-                            HStack {Text("AI 降噪");Spacer();Text("\(Int(model.strength*100))").monospacedDigit().foregroundStyle(.secondary)}
+                            HStack {Text(model.isRaw && DenoiseEngine.hasLocalLinearModel() ? "本地模型 · 实验" : "AI 降噪");Spacer();Text("\(Int(model.strength*100))").monospacedDigit().foregroundStyle(.secondary)}
                             Slider(value:$model.strength,in:0...1,step:0.05)
                         } else {
                             Text(model.lens).font(.subheadline)
@@ -224,7 +238,7 @@ struct StudioView: View {
                                 Toggle("镜头校正",isOn:$model.correction)
                                 if !model.isRaw {Text("仅用于未经机内校正的 JPEG").font(.caption).foregroundStyle(.secondary)}
                             }
-                            Text("校正输出 16 位线性 DNG；未校正输出 Bayer DNG。").font(.caption).foregroundStyle(.secondary)
+                            Text(DenoiseEngine.hasLocalLinearModel() ? "RAW 输出 16 位线性 DNG" : "校正输出 16 位线性 DNG；未校正输出 Bayer DNG。").font(.caption).foregroundStyle(.secondary)
                         }
                     }.disabled(model.busy).padding(.horizontal,20).padding(.bottom,12)
                 }.frame(maxHeight:.infinity)
@@ -250,7 +264,7 @@ struct StudioView: View {
         .fileImporter(isPresented:$showFiles,allowedContentTypes:[.image,.data],allowsMultipleSelection:false) { result in if case .success(let urls)=result,let url=urls.first {model.load(url)} }
         .onChange(of:photo) { _, item in Task { if let data = try? await item?.loadTransferable(type:Data.self) { let ext=item?.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg";let url=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+"."+ext);do {try data.write(to:url);model.load(url);try? FileManager.default.removeItem(at:url)}catch {model.message=error.localizedDescription} } } }
         .sheet(isPresented:$share) { if let url=model.result { ShareSheet(url:url) } }
-        .alert("净影 0.1",isPresented:$about) {
+        .alert("净影 0.3",isPresented:$about) {
             Button("完成",role:.cancel){}
         } message: {Text("离线 RAW / JPEG 降噪\nRawNIND · NIND · LibRaw\nCPU 推理 · GPL-3.0\n原片不会被覆盖")}
     }

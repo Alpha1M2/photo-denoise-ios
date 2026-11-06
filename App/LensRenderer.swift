@@ -46,19 +46,20 @@ enum LensRenderer {
         return vec4(vec3(red,g.g,blue)/v,g.a);
     }
     """)
-    static func renderCorrected(_ source:URL,to destination:URL) throws {
+    static func renderCorrected(_ source:URL,to destination:URL,correct:Bool=true) throws {
         let meta=Metadata(source)
         var image:CIImage?
         var systemCorrected=false
         if let raw=CIRAWFilter(imageURL:source) {
-            raw.isLensCorrectionEnabled=raw.isLensCorrectionSupported
+            raw.isLensCorrectionEnabled=correct && raw.isLensCorrectionSupported
+            raw.baselineExposure=0;raw.exposure=0;raw.boostAmount=0;raw.boostShadowAmount=0;raw.localToneMapAmount=0;raw.contrastAmount=0;raw.detailAmount=0;raw.sharpnessAmount=0;raw.moireReductionAmount=0
             raw.luminanceNoiseReductionAmount=0
             raw.colorNoiseReductionAmount=0
             image=raw.outputImage
             systemCorrected=raw.isLensCorrectionSupported
         } else { image=CIImage(contentsOf:source,options:[.applyOrientationProperty:true]) }
         guard var result=image else{throw error("无法显影原片，不能应用镜头校正。")}
-        if !systemCorrected {
+        if correct && !systemCorrected {
             guard meta.matches24105,meta.aperture>0,let path=Bundle.main.url(forResource:"sony24105",withExtension:"json"),let data=try JSONSerialization.jsonObject(with:Data(contentsOf:path)) as? [String:Any],let ds=data["distortion"] as? [[String:Double]],let cs=data["tca"] as? [[String:Double]],let vs=data["vignetting"] as? [[String:Double]],let kernel else{throw error("此镜头尚无可用的校正数据，未应用替代配置。")}
             let d=interpolate(ds,at:meta.focal,key:"focal"),c=interpolate(cs,at:meta.focal,key:"focal")
             let focals=Set(vs.compactMap{$0["focal"]}).sorted()
