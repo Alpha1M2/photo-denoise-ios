@@ -8,6 +8,32 @@
 #include <memory>
 #include <cmath>
 static NSError *failure(NSString*s){return [NSError errorWithDomain:@"JingYing" code:1 userInfo:@{NSLocalizedDescriptionKey:s}];}
+// Metadata is read from the original import, never the prepared pixel buffer.
+static dng::Metadata originalMetadata(NSURL *url,std::string &make,std::string &model) {
+ dng::Metadata meta;if(!url)return meta;
+ auto raw=std::make_unique<LibRaw>();
+ if(!raw->open_file(url.fileSystemRepresentation)){
+  make=raw->imgdata.idata.make;model=raw->imgdata.idata.model;
+  meta.lens=raw->imgdata.lens.Lens;meta.focal=raw->imgdata.other.focal_len;
+  meta.aperture=raw->imgdata.other.aperture;meta.exposure=raw->imgdata.other.shutter;meta.iso=raw->imgdata.other.iso_speed;
+ }
+ CGImageSourceRef source=CGImageSourceCreateWithURL((__bridge CFURLRef)url,NULL);
+ if(source){
+  NSDictionary *props=CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source,0,NULL));CFRelease(source);
+  NSDictionary *tiff=props[(NSString*)kCGImagePropertyTIFFDictionary],*exif=props[(NSString*)kCGImagePropertyExifDictionary];
+  auto text=[](id value)->std::string{return [value isKindOfClass:NSString.class]?[(NSString*)value UTF8String]:"";};
+  auto assign=[&](std::string &target,id value){auto v=text(value);if(!v.empty())target=v;};
+  assign(make,tiff[@"Make"]);assign(model,tiff[@"Model"]);assign(meta.lens,exif[@"LensModel"]);
+  assign(meta.dateTime,exif[@"DateTimeOriginal"]);if(meta.dateTime.empty())assign(meta.dateTime,tiff[@"DateTime"]);
+  assign(meta.subsec,exif[@"SubsecTimeOriginal"]);assign(meta.offsetTime,exif[@"OffsetTimeOriginal"]);
+  assign(meta.artist,tiff[@"Artist"]);assign(meta.copyright,tiff[@"Copyright"]);
+  if([exif[@"FocalLength"] doubleValue]>0)meta.focal=[exif[@"FocalLength"] doubleValue];
+  if([exif[@"FNumber"] doubleValue]>0)meta.aperture=[exif[@"FNumber"] doubleValue];
+  if([exif[@"ExposureTime"] doubleValue]>0)meta.exposure=[exif[@"ExposureTime"] doubleValue];
+  NSArray *iso=exif[@"ISOSpeedRatings"];if([iso isKindOfClass:NSArray.class]&&iso.count)meta.iso=[iso.firstObject unsignedIntValue];
+ }
+ return meta;
+}
 static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0)n=-n;if(n>=size)n=2*size-2-n;}return n;}
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @interface DenoiseEngine ()
@@ -29,7 +55,12 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(!out||out.length<length)ok=NO;
  int maximum=0,flippedMaximum=0,first=-1;
  if(ok){const uint16_t*p=(const uint16_t*)((const uint8_t*)out.bytes+out.length-length);first=p[0];for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++){maximum=std::max(maximum,std::abs((int)p[i*3+c]-(int)pixels[i*4+c]));size_t flipped=(h-1-i/w)*w+i%w;flippedMaximum=std::max(flippedMaximum,std::abs((int)p[i*3+c]-(int)pixels[flipped*4+c]));}}
- BOOL passed=ok && maximum<=3;
+ CGImageSourceRef check=CGImageSourceCreateWithURL((__bridge CFURLRef)dst,NULL);
+ CGImageRef thumbnail=check?CGImageSourceCreateThumbnailAtIndex(check,0,(__bridge CFDictionaryRef)@{(NSString*)kCGImageSourceCreateThumbnailFromImageAlways:@YES,(NSString*)kCGImageSourceThumbnailMaxPixelSize:@1024}):nil;
+ BOOL displayOK=thumbnail && CGImageGetWidth(thumbnail)==w && [DenoiseEngine linearBufferPreview:dst]!=nil;
+ if(thumbnail)CGImageRelease(thumbnail);if(check)CFRelease(check);
+ CIRAWFilter*rawCheck=[CIRAWFilter filterWithImageURL:dst];BOOL decodeOK=rawCheck.outputImage!=nil;
+ BOOL passed=ok && maximum<=3 && displayOK && decodeOK;
  NSURL*crop=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".dng"]]];
  engine.requestedPreviewRegion=CGRectMake(.7,.1,.2,.2);
  BOOL previewOK=[engine process:src destination:crop strength:1 raw:NO preview:YES center:CGPointZero progress:^(double v){} error:nil]!=nil;
@@ -51,7 +82,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  NSData*preparedData=[NSData dataWithContentsOfURL:prepared];if(preparedData.length!=12+(size_t)w*h*6)bands=NO;
  if(bands){const uint16_t*p=(const uint16_t*)((const uint8_t*)preparedData.bytes+12);for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++)if(std::abs((int)p[i*3+c]-(int)expected[i*4+c])>1)bands=NO;}
  CGColorSpaceRelease(cs);[[NSFileManager defaultManager] removeItemAtURL:tiff error:nil];[[NSFileManager defaultManager] removeItemAtURL:prepared error:nil];passed=passed&&bands;
- [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands];
+ [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d display=%d decode=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands,displayOK,decodeOK];
 }
  + (BOOL)prepareImageBuffer:(NSURL*)source destination:(NSURL*)destination linear:(BOOL)linear error:(NSError**)error {
  CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];if(!ci){if(error)*error=failure(@"无法读取输入图像，未能建立解码缓存。");return NO;}
@@ -102,9 +133,16 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  NSData*data=[NSData dataWithContentsOfURL:url];if(data.length<12)return nil;const uint8_t*bytes=(const uint8_t*)data.bytes;uint32_t header[3];memcpy(header,bytes,12);size_t offset=12;
  if(header[0]!=0x314c594a){
    if(bytes[0]!='I'||bytes[1]!='I'||bytes[2]!=42||bytes[3]!=0)return nil;
-   uint32_t root=0;memcpy(&root,bytes+4,4);if((size_t)root+2>data.length)return nil;uint16_t tags=0;memcpy(&tags,bytes+root,2);if((size_t)root+2+(size_t)tags*12>data.length)return nil;
-   header[1]=header[2]=0;uint32_t photo=0,samples=0;offset=0;
-   for(unsigned i=0;i<tags;i++){const uint8_t*entry=bytes+root+2+i*12;uint16_t tag=0;uint32_t value=0;memcpy(&tag,entry,2);memcpy(&value,entry+8,4);if(tag==256)header[1]=value;if(tag==257)header[2]=value;if(tag==262)photo=value;if(tag==277)samples=value;if(tag==273)offset=value;}
+   uint32_t root=0;memcpy(&root,bytes+4,4);uint32_t photo=0,samples=0;
+   for(int level=0;level<2;level++){
+    if((size_t)root+2>data.length)return nil;uint16_t tags=0;memcpy(&tags,bytes+root,2);if((size_t)root+2+(size_t)tags*12>data.length)return nil;
+    header[1]=header[2]=0;photo=samples=0;offset=0;uint32_t sub=0;
+    for(unsigned i=0;i<tags;i++){const uint8_t*entry=bytes+root+2+i*12;uint16_t tag=0;uint32_t value=0,count=0;memcpy(&tag,entry,2);memcpy(&count,entry+4,4);memcpy(&value,entry+8,4);
+     if(tag==273&&count>1){if((size_t)value+4>data.length)return nil;memcpy(&value,bytes+value,4);}
+     if(tag==256)header[1]=value;if(tag==257)header[2]=value;if(tag==262)photo=value;if(tag==277)samples=value;if(tag==273)offset=value;if(tag==330)sub=value;
+    }
+    if(photo==34892)break;if(!sub)return nil;root=sub;
+   }
    if(photo!=34892||samples!=3)return nil;
  }
  size_t count=(size_t)header[1]*header[2];if(!count||count>65000000||offset+count*6!=data.length)return nil;
@@ -255,15 +293,15 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  BOOL ok=NO;
  if(raw){auto&c=reader->imgdata.color;double matrix[9],neutral[3];for(int i=0;i<9;i++)matrix[i]=c.cam_xyz[i/3][i%3];double g=c.cam_mul[1]>0?c.cam_mul[1]:1;for(int i=0;i<3;i++)neutral[i]=c.cam_mul[i]>0?g/c.cam_mul[i]:1;
    int flip=reader->imgdata.sizes.flip,orientation=flip==3?3:(flip==5?8:(flip==6?6:1));
-   dng::Metadata meta;meta.lens=reader->imgdata.lens.Lens;meta.focal=reader->imgdata.other.focal_len;meta.aperture=reader->imgdata.other.aperture;meta.exposure=reader->imgdata.other.shutter;meta.iso=reader->imgdata.other.iso_speed;
+   std::string make,model;auto meta=originalMetadata(self.metadataSource ?: source,make,model);
    ok=dng::write(staging.fileSystemRepresentation,output,width,height,reader->imgdata.idata.make,reader->imgdata.idata.model,matrix,neutral,orientation,meta);
- }else if(linear){double matrix[9]={3.2404542,-1.5371385,-0.4985314,-0.9692660,1.8760108,0.0415560,0.0556434,-0.2040259,1.0572252},neutral[3]={1,1,1};ok=dng::write(staging.fileSystemRepresentation,output,width,height,"JingYing","Linear sRGB",matrix,neutral,1,dng::Metadata(),true);
+ }else if(linear){double matrix[9]={3.2404542,-1.5371385,-0.4985314,-0.9692660,1.8760108,0.0415560,0.0556434,-0.2040259,1.0572252},neutral[3]={1,1,1};std::string make,model;auto meta=originalMetadata(self.metadataSource ?: source,make,model);ok=dng::write(staging.fileSystemRepresentation,output,width,height,make,model,matrix,neutral,1,meta,true);
  }else{
    CGContextRef bitmap=CGBitmapContextCreate(rgba.data(),width,height,8,width*4,color,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrderDefault);CGImageRef im=bitmap?CGBitmapContextCreateImage(bitmap):nil;
    if(im){
      NSMutableDictionary*properties=[NSMutableDictionary dictionaryWithDictionary:@{(__bridge NSString*)kCGImageDestinationLossyCompressionQuality:@0.97,(__bridge NSString*)kCGImagePropertyOrientation:@1}];
-     CGImageSourceRef inputSource=CGImageSourceCreateWithURL((__bridge CFURLRef)source,nil);
-     if(inputSource){NSDictionary*sourceProperties=CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(inputSource,0,nil));NSMutableDictionary*exif=[sourceProperties[(__bridge NSString*)kCGImagePropertyExifDictionary] mutableCopy];if(exif){exif[(__bridge NSString*)kCGImagePropertyExifPixelXDimension]=@(width);exif[(__bridge NSString*)kCGImagePropertyExifPixelYDimension]=@(height);properties[(__bridge NSString*)kCGImagePropertyExifDictionary]=exif;}CFRelease(inputSource);}
+     CGImageSourceRef inputSource=CGImageSourceCreateWithURL((__bridge CFURLRef)(self.metadataSource ?: source),nil);
+     if(inputSource){NSDictionary*sourceProperties=CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(inputSource,0,nil));for(NSString*key in @[(NSString*)kCGImagePropertyTIFFDictionary,(NSString*)kCGImagePropertyGPSDictionary]){if(sourceProperties[key])properties[key]=sourceProperties[key];}NSMutableDictionary*exif=[sourceProperties[(__bridge NSString*)kCGImagePropertyExifDictionary] mutableCopy];if(exif){exif[(__bridge NSString*)kCGImagePropertyExifPixelXDimension]=@(width);exif[(__bridge NSString*)kCGImagePropertyExifPixelYDimension]=@(height);properties[(__bridge NSString*)kCGImagePropertyExifDictionary]=exif;}CFRelease(inputSource);}
      CGImageDestinationRef dst=CGImageDestinationCreateWithURL((__bridge CFURLRef)staging,(__bridge CFStringRef)UTTypeJPEG.identifier,1,nil);
      if(dst){CGImageDestinationAddImage(dst,im,(__bridge CFDictionaryRef)properties);ok=CGImageDestinationFinalize(dst);CFRelease(dst);}CGImageRelease(im);
    }if(bitmap)CGContextRelease(bitmap);

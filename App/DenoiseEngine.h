@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)hasLocalLinearModel;
 + (nullable NSDictionary<NSString *, id> *)rawMetadata:(NSURL *)source;
 + (nullable CIImage *)rawLinearImage:(NSURL *)source error:(NSError **)error NS_SWIFT_NAME(rawLinearImage(_:));
+@property(atomic,copy,nullable) NSURL *metadataSource;
 @property(atomic) BOOL accelerate;
 @property(atomic,copy) NSString *backendName;
 + (BOOL)renderLinearRaw:(NSURL *)source destination:(NSURL *)destination error:(NSError **)error;

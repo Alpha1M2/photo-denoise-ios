@@ -65,7 +65,7 @@ import ImageIO
                 mode=RenderLifetime.shared.start(smoke:false,work:{
                     starts+=1
                     DispatchQueue.global(qos:.userInitiated).async {
-                        let end=Date().addingTimeInterval(8)
+                        let end=Date().addingTimeInterval(30)
                         var nextProbe=Date()
                         var checksum:UInt64=1
                         while Date()<end {
@@ -197,7 +197,7 @@ import ImageIO
         let reused=cachedKey==key ? cachedInput : nil
         let amount=Float(strength),region=visibleRegion,engine=self.engine
         let target=folder.appendingPathComponent("\(preview ? "preview" : "denoised")-\(UUID().uuidString).\(linear || rawSensor ? "dng" : "jpg")")
-        interruptedMessage=nil;engine.cancelled=false;engine.useLocalLinearModel=localRaw;engine.requestedPreviewRegion=region;engine.accelerate=accelerate && !smoke
+        interruptedMessage=nil;engine.metadataSource=source;engine.cancelled=false;engine.useLocalLinearModel=localRaw;engine.requestedPreviewRegion=region;engine.accelerate=accelerate && !smoke
         backend=accelerate ? "准备加速引擎…" : "CPU"
         busy=true;cancelling=false;previewing=preview;preparing=true;progress=0;eta="";etaDeadline=nil;backgroundStatus="";message="准备图像 · 请保持前台"
         previewImage=nil;after=nil;result=nil
