@@ -16,7 +16,7 @@ import ImageIO
     @Published var strength: Double = 0.35
     @Published var busy = false
     @Published var progress: Double = 0
-    @Published var message = "导入照片，先检查局部，再处理原尺寸。"
+    @Published var message = "未导入照片"
     @Published var lens = "未读取镜头"
     @Published var lensStatus = "镜头校正尚未检测"
     @Published var correctionAvailable = false
@@ -68,10 +68,10 @@ import ImageIO
             }
             if isRaw, let filter = CIRAWFilter(imageURL: target) {
                 correctionAvailable = LensRenderer.supports(target)
-                lensStatus = filter.isLensCorrectionSupported ? "系统支持此原片的镜头校正；用于显影导出，不改写传感器 DNG。" : (correctionAvailable ? "24–105 G：Lensfun 畸变、暗角、色差数据。显影导出四边各裁切4%。" : "系统未提供此原片的镜头校正；不会套用其他型号。")
-            } else { correctionAvailable = LensRenderer.Metadata(target).matches24105; lensStatus = "JPEG 默认不重复校正。仅确认相机未校正时使用校正导出；24–105 配置四边各裁切4%。" }
+                lensStatus = filter.isLensCorrectionSupported ? "配置：系统镜头校正" : (correctionAvailable ? "配置：Lensfun · 畸变 / 暗角 / 色差 · 边缘裁切 4%" : "无可用校正配置")
+            } else { correctionAvailable = LensRenderer.Metadata(target).matches24105; lensStatus = "JPEG 校正默认关闭 · 24–105 G 配置裁切 4%" }
             correction = isRaw && correctionAvailable
-            message = "已导入 \(url.lastPathComponent)。建议先用 35% 强度试算。"
+            message = "已导入 · \(url.lastPathComponent)"
         } catch { message = error.localizedDescription }
     }
     nonisolated static func thumbnail(_ url: URL) -> UIImage? {
@@ -86,7 +86,7 @@ import ImageIO
     func run(preview: Bool) {
         guard let source, !busy else { return }
         engine.cancelled=false;busy = true; progress = 0; result = nil; after = nil; previewMode = preview
-        message = preview ? "正在试算 1024 像素局部…" : "正在逐块处理全尺寸，请保持 App 在前台。"
+        message = preview ? "正在生成预览…" : "正在处理全尺寸…"
         let raw = isRaw, amount = Float(strength), center = CGPoint(x:centerX,y:centerY)
         let target = folder.appendingPathComponent("\(preview ? "preview" : "denoised")-\(UUID().uuidString).\(raw ? "dng" : "jpg")")
         let engine = self.engine
@@ -108,7 +108,7 @@ import ImageIO
                 let image = Self.thumbnail(output)
                 Task { @MainActor in
                     self.after=image; self.result=preview ? nil : output; self.busy=false
-                    self.message="完成，用时 \(Int(Date().timeIntervalSince(start))) 秒。\(preview ? "这是局部预览，尚未导出全图。" : "原片保留，可分享导出。")"
+                    self.message="完成，用时 \(Int(Date().timeIntervalSince(start))) 秒。\(preview ? "局部预览" : "可导出")"
                     self.reportSmoke(image != nil,self.message)
                     UIApplication.shared.isIdleTimerDisabled=false
                 }
@@ -129,7 +129,7 @@ import ImageIO
                 if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
                 let output=try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in self.progress=value}})
                 let image=Self.thumbnail(output)
-                Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="校正并降噪完成。这是显影后的 JPEG，原 RAW 保留。";self.reportSmoke(image != nil,self.message);UIApplication.shared.isIdleTimerDisabled=false}
+                Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="JPEG 已就绪";self.reportSmoke(image != nil,self.message);UIApplication.shared.isIdleTimerDisabled=false}
             }catch {Task{@MainActor in self.busy=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false}}
         }
     }
@@ -141,47 +141,98 @@ struct StudioView: View {
     @State private var photo: PhotosPickerItem?
     @State private var compare = false
     @State private var share = false
+    @State private var panel = 0
+    @State private var about = false
+    private let accent = Color(red:0.32,green:0.65,blue:1)
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment:.leading,spacing:20) {
-                    HStack { VStack(alignment:.leading,spacing:5) { Text("保留夜色，也保留细节").font(.title2.bold()); Text("RAW · JPEG / 本机离线 AI").font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName:"moon.stars.fill").font(.largeTitle).foregroundStyle(.mint) }
-                    HStack { Button { showFiles=true } label: { Label("文件导入",systemImage:"folder") }; PhotosPicker(selection:$photo,matching:.images,preferredItemEncoding:.current) { Label("相册导入",systemImage:"photo") } }.buttonStyle(.bordered).disabled(model.busy)
-                    if let image = compare ? model.before : (model.after ?? model.before) {
-                        ZoomImage(image:image).frame(height:320).clipShape(RoundedRectangle(cornerRadius:18))
-                        Text("双指缩放检查细节。\(model.previewMode ? "试算前后为同一局部、同一显影方式。" : "")").font(.caption).foregroundStyle(.secondary)
-                        Toggle("查看原片参考",isOn:$compare)
-                    } else { RoundedRectangle(cornerRadius:18).fill(.white.opacity(0.04)).frame(height:250).overlay { ContentUnavailableView("导入一张夜景照片",systemImage:"photo.badge.plus",description:Text("Sony ARW / DNG / JPEG")) } }
-                    VStack(alignment:.leading,spacing:10) {
-                        HStack { Text("降噪强度").bold(); Spacer(); Text("\(Int(model.strength*100))%").monospacedDigit().foregroundStyle(.mint) }
-                        Slider(value:$model.strength,in:0...1,step:0.05)
-                        Text("低强度保留纹理。不要用额外锐化掩盖已丢失的细节。").font(.caption).foregroundStyle(.secondary)
-                        Text("局部试算位置").font(.subheadline)
-                        HStack { Text("左右");Slider(value:$model.centerX,in:0...1);Text("上下");Slider(value:$model.centerY,in:0...1) }
-                    }.disabled(model.busy)
-                    VStack(alignment:.leading,spacing:8) {
-                        Label("镜头",systemImage:"camera.aperture").bold();Text(model.lens).font(.subheadline)
-                        Text(model.lensStatus).font(.caption).foregroundStyle(.secondary)
-                        Text("传感器 DNG 保留原始几何；镜头校正需要在显影输出阶段进行。").font(.caption).foregroundStyle(.secondary)
-                        if model.correctionAvailable {
-                            Toggle(model.isRaw ? "启用校正 JPEG 导出" : "确认 JPEG 尚未经过镜头校正",isOn:$model.correction)
-                            Button("校正并降噪 → JPEG") {compare=false;model.correctedJPEG()}.disabled(model.busy || !model.correction)
+        GeometryReader { geometry in
+            VStack(spacing:0) {
+                HStack {
+                    Text("净影").font(.headline)
+                    Spacer()
+                    if model.source != nil { Text(model.isRaw ? "RAW" : "JPEG").font(.caption.monospaced()).foregroundStyle(.secondary) }
+                    Button { about=true } label:{Image(systemName:"info.circle")}.accessibilityLabel("关于")
+                    Button {share=true} label:{Image(systemName:"square.and.arrow.up")}.disabled(model.result==nil).accessibilityLabel("导出")
+                }.padding(.horizontal,20).frame(height:48)
+                ZStack {
+                    Color.black
+                    if let image=compare ? model.before : (model.after ?? model.before) {
+                        ZoomImage(image:image)
+                        VStack { HStack {
+                            Text(compare ? "原片" : (model.after == nil ? "原片" : "降噪后")).font(.caption)
+                                .padding(.horizontal,10).padding(.vertical,5).background(.black.opacity(0.65),in:Capsule())
+                            Spacer()
+                            if model.previewMode {Text("局部预览").font(.caption).padding(6).background(.black.opacity(0.65),in:Capsule())}
+                        }; Spacer() }.padding(12).allowsHitTesting(false)
+                    } else {
+                        VStack(spacing:14) {
+                            Image(systemName:"photo").font(.system(size:32,weight:.light))
+                            Text("导入照片").font(.subheadline)
+                            Text("ARW · DNG · JPEG").font(.caption).foregroundStyle(.secondary)
+                        }.foregroundStyle(.secondary)
+                    }
+                }.frame(height:max(180,geometry.size.height*0.43))
+                HStack {
+                    Button {compare.toggle()} label:{Label(compare ? "原片" : "对比",systemImage:"square.on.square")}
+                        .disabled(model.before==nil).tint(compare ? accent : .white)
+                    Spacer()
+                    if model.busy {Text("\(Int(model.progress*100))%").monospacedDigit()}
+                    else {Text(model.previewMode ? "1024 px" : "全尺寸").foregroundStyle(.secondary)}
+                }.font(.caption).padding(.horizontal,20).frame(height:38)
+                Divider()
+                Picker("调整",selection:$panel) {Text("细节").tag(0);Text("光学").tag(1)}
+                    .pickerStyle(.segmented).padding(.horizontal,20).padding(.vertical,12)
+                ScrollView {
+                    VStack(alignment:.leading,spacing:14) {
+                        if panel==0 {
+                            HStack {Text("AI 降噪");Spacer();Text("\(Int(model.strength*100))").monospacedDigit().foregroundStyle(.secondary)}
+                            Slider(value:$model.strength,in:0...1,step:0.05)
+                            DisclosureGroup("预览区域") {
+                                VStack(spacing:6) {
+                                    HStack {Text("水平").font(.caption);Slider(value:$model.centerX,in:0...1)}
+                                    HStack {Text("垂直").font(.caption);Slider(value:$model.centerY,in:0...1)}
+                                }.padding(.top,8)
+                            }.font(.subheadline)
+                        } else {
+                            Text(model.lens).font(.subheadline)
+                            Text(model.lensStatus).font(.caption).foregroundStyle(.secondary)
+                            if model.correctionAvailable {
+                                Toggle("镜头校正",isOn:$model.correction)
+                                if !model.isRaw {Text("仅用于未经机内校正的 JPEG").font(.caption).foregroundStyle(.secondary)}
+                            }
+                            Text("校正输出 JPEG；DNG 保留传感器几何。").font(.caption).foregroundStyle(.secondary)
                         }
-                    }.padding().frame(maxWidth:.infinity,alignment:.leading).background(.white.opacity(0.05),in:RoundedRectangle(cornerRadius:14))
-                    if model.busy { ProgressView(value:model.progress).tint(.mint); Button("取消处理",role:.destructive) { model.engine.cancelled=true } }
-                    Text(model.message).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                    }.disabled(model.busy).padding(.horizontal,20).padding(.bottom,12)
+                }.frame(maxHeight:.infinity)
+                VStack(spacing:10) {
+                    if model.busy {ProgressView(value:model.progress)}
+                    Text(model.message).font(.caption2).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth:.infinity,alignment:.leading)
+                    HStack(spacing:12) {
+                        if model.busy {
+                            Button("取消") {model.engine.cancelled=true}.frame(maxWidth:.infinity).buttonStyle(.bordered)
+                        } else {
+                            Button("预览") {compare=false;model.run(preview:true)}.frame(maxWidth:.infinity).buttonStyle(.bordered)
+                            Button(panel==1 && model.correction ? "校正并降噪" : "应用降噪") {
+                                compare=false
+                                if panel==1 && model.correction {model.correctedJPEG()}else{model.run(preview:false)}
+                            }.frame(maxWidth:.infinity).buttonStyle(.borderedProminent)
+                        }
+                    }.disabled(model.source==nil).controlSize(.regular)
+                    Divider()
                     HStack {
-                        Button("局部试算") {compare=false;model.run(preview:true)}.buttonStyle(.bordered)
-                        Button("处理原尺寸") {compare=false;model.run(preview:false)}.buttonStyle(.borderedProminent).tint(.mint).foregroundStyle(.black)
-                    }.disabled(model.source==nil || model.busy)
-                    if model.result != nil { Button {share=true} label:{Label("导出 / 存储到文件",systemImage:"square.and.arrow.up")}.buttonStyle(.bordered) }
-                    Text("净影 0.1 · RawNIND / NIND · GPL-3.0\n一次处理一张；原始文件不会被覆盖。此版本推理使用 CPU，真机性能以实际计时为准。").font(.caption2).foregroundStyle(.secondary)
-                }.padding(20)
-            }.navigationTitle("净影").background(Color(red:0.035,green:0.055,blue:0.075)).tint(.mint)
+                        Button {showFiles=true} label:{Label("文件",systemImage:"folder")}
+                        Spacer()
+                        PhotosPicker(selection:$photo,matching:.images,preferredItemEncoding:.current) {Label("照片",systemImage:"photo.on.rectangle")}
+                    }.font(.subheadline).disabled(model.busy).padding(.vertical,4)
+                }.padding(.horizontal,20).padding(.bottom,8)
+            }.background(Color(white:0.10)).tint(accent)
         }
         .fileImporter(isPresented:$showFiles,allowedContentTypes:[.image,.data],allowsMultipleSelection:false) { result in if case .success(let urls)=result,let url=urls.first {model.load(url)} }
         .onChange(of:photo) { _, item in Task { if let data = try? await item?.loadTransferable(type:Data.self) { let ext=item?.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg";let url=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+"."+ext);do {try data.write(to:url);model.load(url);try? FileManager.default.removeItem(at:url)}catch {model.message=error.localizedDescription} } } }
         .sheet(isPresented:$share) { if let url=model.result { ShareSheet(url:url) } }
+        .alert("净影 0.1",isPresented:$about) {
+            Button("完成",role:.cancel){}
+        } message: {Text("离线 RAW / JPEG 降噪\nRawNIND · NIND · LibRaw\nCPU 推理 · GPL-3.0\n原片不会被覆盖")}
     }
 }
 struct ShareSheet: UIViewControllerRepresentable {
