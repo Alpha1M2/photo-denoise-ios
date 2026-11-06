@@ -14,11 +14,10 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
 + (NSString*)testLinearFixture {
  const int w=601,h=319;std::vector<uint16_t> pixels((size_t)w*h*4);
  for(int y=0;y<h;y++)for(int x=0;x<w;x++){for(int c=0;c<3;c++)pixels[((size_t)y*w+x)*4+c]=1000+(x*31+y*53+c*7000)%50000;pixels[((size_t)y*w+x)*4+3]=65535;}
- NSURL*src=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".tiff"]]];
+ NSURL*src=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".jyl"]]];
  NSURL*dst=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".dng"]]];
- CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
- NSData*data=[NSData dataWithBytes:pixels.data() length:pixels.size()*2];CIImage*ci=[CIImage imageWithBitmapData:data bytesPerRow:w*8 size:CGSizeMake(w,h) format:kCIFormatRGBA16 colorSpace:cs];
- BOOL ok=[[CIContext contextWithOptions:@{kCIContextWorkingFormat:@(kCIFormatRGBAf)}] writeTIFFRepresentationOfImage:ci toURL:src format:kCIFormatRGBA16 colorSpace:cs options:@{} error:nil];CGColorSpaceRelease(cs);
+ uint32_t header[3]={0x314c594a,w,h};std::ofstream f(src.fileSystemRepresentation,std::ios::binary);f.write((char*)header,12);
+ for(size_t i=0;i<(size_t)w*h;i++)f.write((char*)&pixels[i*4],6);BOOL ok=f.good();f.close();
  DenoiseEngine*engine=[DenoiseEngine new];engine.useLocalLinearModel=YES;
  if(ok)ok=[engine process:src destination:dst strength:1 raw:NO preview:NO center:CGPointZero progress:^(double v){} error:nil]!=nil;
  NSData*out=[NSData dataWithContentsOfURL:dst];size_t length=(size_t)w*h*6;
@@ -35,11 +34,16 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(rc){if(error)*error=failure(@"RAW 线性解码失败");return NO;}
  libraw_processed_image_t*im=reader->dcraw_make_mem_image(&rc);
  if(!im||rc||im->colors!=3||im->bits!=16){if(im)LibRaw::dcraw_clear_mem(im);if(error)*error=failure(@"RAW 线性输出格式不支持");return NO;}
- int w=im->width,h=im->height;NSMutableData*rgba=[NSMutableData dataWithLength:(size_t)w*h*8];auto*dst=(uint16_t*)rgba.mutableBytes;auto*src=(uint16_t*)im->data;
- for(size_t i=0;i<(size_t)w*h;i++){for(int c=0;c<3;c++)dst[i*4+c]=src[i*3+c];dst[i*4+3]=65535;}
- LibRaw::dcraw_clear_mem(im);reader.reset();CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
- CIImage*ci=[CIImage imageWithBitmapData:rgba bytesPerRow:w*8 size:CGSizeMake(w,h) format:kCIFormatRGBA16 colorSpace:cs];
- CIContext*ctx=[CIContext contextWithOptions:@{kCIContextCacheIntermediates:@NO,kCIContextWorkingFormat:@(kCIFormatRGBAf)}];BOOL ok=[ctx writeTIFFRepresentationOfImage:ci toURL:destination format:kCIFormatRGBA16 colorSpace:cs options:@{} error:error];CGColorSpaceRelease(cs);return ok;
+ uint32_t header[3]={0x314c594a,im->width,im->height};std::ofstream f(destination.fileSystemRepresentation,std::ios::binary);
+ f.write((const char*)header,sizeof(header));f.write((const char*)im->data,im->data_size);BOOL ok=f.good();f.close();LibRaw::dcraw_clear_mem(im);
+ if(!ok&&error)*error=failure(@"Unable to write linear RAW buffer");return ok;
+}
++ (UIImage*)linearBufferPreview:(NSURL*)url {
+ NSData*data=[NSData dataWithContentsOfURL:url];if(data.length<12)return nil;uint32_t header[3];memcpy(header,data.bytes,12);
+ if(header[0]!=0x314c594a||data.length!=12+(size_t)header[1]*header[2]*6)return nil;
+ NSData*pixels=[data subdataWithRange:NSMakeRange(12,data.length-12)];CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
+ CGImageRef cg=CGImageCreate(header[1],header[2],16,48,header[1]*6,cs,kCGImageAlphaNone|kCGBitmapByteOrder16Little,provider,NULL,false,kCGRenderingIntentDefault);
+ UIImage*image=cg?[UIImage imageWithCGImage:cg]:nil;if(cg)CGImageRelease(cg);CGColorSpaceRelease(cs);CGDataProviderRelease(provider);return image;
 }
 + (UIImage*)rawPreview:(NSURL*)url {
  auto owner=std::make_unique<LibRaw>();auto&reader=*owner;reader.imgdata.params.half_size=0;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
@@ -90,6 +94,12 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    if(preview){int pw=std::min(width,1024),ph=std::min(height,1024);cx+=((int)std::clamp(center.x*width-pw/2,0.,(double)(width-pw)))&~1;cy+=((int)std::clamp(center.y*height-ph/2,0.,(double)(height-ph)))&~1;width=pw;height=ph;}
    if((double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"RAW 超过6500万像素限制。");return nil;}
    output.resize((size_t)width*height);
+ }else if(localLinear && [source.pathExtension.lowercaseString isEqualToString:@"jyl"]){
+   std::ifstream f(source.fileSystemRepresentation,std::ios::binary);uint32_t header[3]={};f.read((char*)header,12);width=header[1];height=header[2];
+   if(!f||header[0]!=0x314c594a||width<1||height<1||(double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"Invalid linear RAW buffer");return nil;}
+   rgb16.resize((size_t)width*height*4);output.resize((size_t)width*height*3);std::vector<uint16_t> row((size_t)width*3);
+   for(int y=0;y<height;y++){f.read((char*)row.data(),row.size()*2);for(int x=0;x<width;x++){for(int c=0;c<3;c++)rgb16[((size_t)y*width+x)*4+c]=row[x*3+c];rgb16[((size_t)y*width+x)*4+3]=65535;}}
+   if(!f){CGColorSpaceRelease(color);if(error)*error=failure(@"Truncated linear RAW buffer");return nil;}
  }else{
    CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];
    if(!ci){CGColorSpaceRelease(color);if(error)*error=failure(@"无法读取图片。");return nil;}

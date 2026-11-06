@@ -157,7 +157,8 @@ import ImageIO
     func correctedJPEG() {
         guard let source,!busy else{return}
         engine.cancelled=false;cancelling=false;busy=true;progress=0;message="正在处理线性 RAW…"
-        let temp=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".tiff")
+        let directLinear=isRaw && !(correction && correctionAvailable) && DenoiseEngine.hasLocalLinearModel()
+        let temp=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+(directLinear ? ".jyl" : ".tiff"))
         let target=folder.appendingPathComponent("corrected-\(UUID().uuidString).dng")
         let engine=self.engine,amount=Float(strength),applyCorrection=correction && correctionAvailable,isRawInput=isRaw
         engine.useLocalLinearModel=isRawInput
@@ -172,11 +173,11 @@ import ImageIO
                 if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
                 let output=try autoreleasepool {try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in if !self.cancelling {self.progress=value}}})}
                 if engine.cancelled {try? FileManager.default.removeItem(at:output);throw LensRenderer.error("已取消")}
-                let reference=Self.thumbnail(temp)
+                let reference=temp.pathExtension == "jyl" ? DenoiseEngine.linearBufferPreview(temp) : Self.thumbnail(temp)
                 let image=Self.linearThumbnail(output)
                 Task{@MainActor in guard !engine.cancelled else{try? FileManager.default.removeItem(at:output);self.busy=false;self.cancelling=false;self.message="已取消";UIApplication.shared.isIdleTimerDisabled=false;return};self.before=reference;self.after=image;self.result=output;self.busy=false;self.cancelling=false;self.message="线性 DNG 已就绪";if self.smoke {
                     let apple=CIRAWFilter(imageURL:output)?.outputImage
-                    self.reportSmoke(apple != nil && image != nil,apple == nil ? "Apple RAW decoder rejected linear DNG" : self.message)
+                    self.reportSmoke(apple != nil && image != nil && reference != nil,apple == nil ? "Apple RAW decoder rejected linear DNG" : self.message)
                 };UIApplication.shared.isIdleTimerDisabled=false}
             }catch {Task{@MainActor in self.busy=false;self.cancelling=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false}}
         }
