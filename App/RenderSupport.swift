@@ -21,6 +21,7 @@ struct RenderEstimate {
 
 @MainActor final class RenderLifetime: NSObject, UNUserNotificationCenterDelegate {
     static let shared=RenderLifetime()
+    private var launchWork:(()->Void)?
     private var task: BGTask?
     private var identifier:String?
     private var assertion:UIBackgroundTaskIdentifier = .invalid
@@ -34,20 +35,20 @@ struct RenderEstimate {
         if smoke {work();return "测试中"}
         if #available(iOS 26.0,*) {
             let id=(Bundle.main.bundleIdentifier ?? "io.alpha1m2.photodenoise")+".render."+UUID().uuidString
-            identifier=id
+            identifier=id;launchWork=work
             let registered=BGTaskScheduler.shared.register(forTaskWithIdentifier:id,using:nil) { [weak self] task in
                 Task{@MainActor in
-                    guard let self else{task.setTaskCompleted(success:false);return}
+                    guard let self,self.identifier==id else{task.setTaskCompleted(success:false);return}
                     self.task=task;task.expirationHandler={Task{@MainActor in self.cancelWork?()}}
                     if let continued=task as? BGContinuedProcessingTask {continued.progress.totalUnitCount=1000}
-                    work()
+                    let launch=self.launchWork;self.launchWork=nil;launch?()
                 }
             }
             if registered {
                 let request=BGContinuedProcessingTaskRequest(identifier:id,title:"净影 · 整图降噪",subtitle:"正在处理")
                 request.strategy = .fail
                 do {try BGTaskScheduler.shared.submit(request);return "可切到后台"}
-                catch {BGTaskScheduler.shared.unregister(forTaskWithIdentifier:id);identifier=nil}
+                catch {BGTaskScheduler.shared.cancel(taskRequestWithIdentifier:id);identifier=nil;launchWork=nil}
             }
         }
         assertion=UIApplication.shared.beginBackgroundTask(withName:"净影渲染") { [weak self] in
@@ -64,9 +65,9 @@ struct RenderEstimate {
     func finish(success:Bool,notify:Bool) {
         if #available(iOS 26.0,*),let task=task as? BGContinuedProcessingTask,success {task.progress.completedUnitCount=1000}
         task?.setTaskCompleted(success:success);task=nil
-        if let identifier {BGTaskScheduler.shared.unregister(forTaskWithIdentifier:identifier)};identifier=nil
+        if let identifier {BGTaskScheduler.shared.cancel(taskRequestWithIdentifier:identifier)};identifier=nil
         if assertion != .invalid {UIApplication.shared.endBackgroundTask(assertion);assertion = .invalid}
-        cancelWork=nil
+        cancelWork=nil;launchWork=nil
         if success && notify {
             let content=UNMutableNotificationContent();content.title="净影 · 渲染完成";content.body="整张照片已处理，可打开净影导出。";content.sound = .default
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier:UUID().uuidString,content:content,trigger:UNTimeIntervalNotificationTrigger(timeInterval:1,repeats:false)))
