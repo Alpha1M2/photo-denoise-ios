@@ -10,10 +10,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property(atomic) NSInteger workUnits;
 @property(atomic) NSInteger fullWorkUnits;
 + (BOOL)prepareImageBuffer:(NSURL *)source destination:(NSURL *)destination linear:(BOOL)linear error:(NSError **)error;
-+ (BOOL)prepareCIImage:(CIImage *)image destination:(NSURL *)destination linear:(BOOL)linear error:(NSError **)error;
++ (BOOL)prepareCIImage:(CIImage *)image destination:(NSURL *)destination linear:(BOOL)linear error:(NSError **)error NS_SWIFT_NAME(prepareCIImage(_:destination:linear:));
 @property(atomic) BOOL useLocalLinearModel;
 + (BOOL)hasLocalLinearModel;
 + (nullable NSDictionary<NSString *, id> *)rawMetadata:(NSURL *)source;
++ (nullable CIImage *)rawLinearImage:(NSURL *)source error:(NSError **)error NS_SWIFT_NAME(rawLinearImage(_:));
+@property(atomic) BOOL accelerate;
+@property(atomic,copy) NSString *backendName;
 + (BOOL)renderLinearRaw:(NSURL *)source destination:(NSURL *)destination error:(NSError **)error;
 + (BOOL)writeSmokeRaw:(NSURL *)url;
 + (NSString *)testLinearFixture;

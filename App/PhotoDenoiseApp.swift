@@ -39,9 +39,11 @@ import ImageIO
     var inferenceStarted:TimeInterval=0
     let engine = DenoiseEngine()
     var detectedRaw=false
+    @Published var accelerate=true
+    @Published var backend=""
     var isRaw: Bool { detectedRaw || ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
     let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-background") || ProcessInfo.processInfo.arguments.contains("--smoke-preview") || ProcessInfo.processInfo.arguments.contains("--smoke-linear") || ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
+    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-lcp") || ProcessInfo.processInfo.arguments.contains("--smoke-background") || ProcessInfo.processInfo.arguments.contains("--smoke-preview") || ProcessInfo.processInfo.arguments.contains("--smoke-linear") || ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
     init() {
         if !smoke,let saved=UserDefaults.standard.string(forKey:"lastOutput"),FileManager.default.fileExists(atPath:saved) {
             result=URL(fileURLWithPath:saved)
@@ -49,6 +51,7 @@ import ImageIO
             message="上次处理结果";Task{@MainActor in self.refreshDisplay()}
         }
         if smoke { Task { @MainActor in
+            if ProcessInfo.processInfo.arguments.contains("--smoke-lcp") {let detail=LocalLensProfiles.selfTest();reportSmoke(detail.hasPrefix("PASS"),detail);return}
             if ProcessInfo.processInfo.arguments.contains("--smoke-background") {
                 var mode="",starts=0,sawBackground=false
                 mode=RenderLifetime.shared.start(smoke:false,work:{
@@ -66,8 +69,8 @@ import ImageIO
                         }
                         let value=checksum
                         Task{@MainActor in
-                            RenderLifetime.shared.finish(success:true,notify:false)
                             self.reportSmoke(starts==1 && sawBackground,"\(mode); background=\(sawBackground); starts=\(starts); checksum=\(value)")
+                            RenderLifetime.shared.finish(success:true,notify:false)
                         }
                     }
                 },cancel:{self.reportSmoke(false,"Background test expired")})
@@ -143,7 +146,9 @@ import ImageIO
             if !metadata.lens.isEmpty {lens=metadata.lens}
             if isRaw {
                 correctionAvailable = LensRenderer.supports(target)
-                lensStatus = CIRAWFilter(imageURL:target)?.isLensCorrectionSupported == true ? "配置：系统镜头校正" : (correctionAvailable ? "配置：Lensfun · 畸变 / 暗角 / 色差 · 边缘裁切 4%" : "此原片暂无可用校正配置")
+                if let profile=LocalLensProfiles.profile(metadata) {
+                    lensStatus="配置：本地 LCP · 畸变 / 暗角 · 自动裁切"+(profile.records.contains{$0.piecewise != nil} ? " · 暗角多项式近似" : "")
+                } else {lensStatus = CIRAWFilter(imageURL:target)?.isLensCorrectionSupported == true ? "配置：系统镜头校正" : (correctionAvailable ? "配置：Lensfun · 畸变 / 暗角 / 色差 · 边缘裁切 4%" : "此原片暂无可用校正配置")}
             } else { correctionAvailable = LensRenderer.Metadata(target).matches24105; lensStatus = "JPEG 校正默认关闭 · 24–105 G 配置裁切 4%" }
             correction = isRaw && correctionAvailable
             message = "已导入 · \(url.lastPathComponent)"
@@ -181,7 +186,8 @@ import ImageIO
         let reused=cachedKey==key ? cachedInput : nil
         let amount=Float(strength),region=visibleRegion,engine=self.engine
         let target=folder.appendingPathComponent("\(preview ? "preview" : "denoised")-\(UUID().uuidString).\(linear || rawSensor ? "dng" : "jpg")")
-        interruptedMessage=nil;engine.cancelled=false;engine.useLocalLinearModel=localRaw;engine.requestedPreviewRegion=region
+        interruptedMessage=nil;engine.cancelled=false;engine.useLocalLinearModel=localRaw;engine.requestedPreviewRegion=region;engine.accelerate=accelerate && !smoke
+        backend=accelerate ? "准备加速引擎…" : "CPU"
         busy=true;cancelling=false;previewing=preview;preparing=true;progress=0;eta="";backgroundStatus="";message="准备图像 · 请保持前台"
         previewImage=nil;after=nil;result=nil
         UIApplication.shared.isIdleTimerDisabled=true
@@ -226,6 +232,7 @@ import ImageIO
     func updateProgress(_ value:Double,units:Int,fullUnits:Int) {
         guard busy,!cancelling else{return}
         progress=value
+        backend=engine.backendName ?? "CPU"
         let now=ProcessInfo.processInfo.systemUptime
         if value==0 {estimate.reset(now:now);inferenceStarted=now;eta="正在测算…";return}
         let done=Int((value*Double(units)).rounded())
@@ -343,6 +350,8 @@ struct StudioView: View {
                         if panel==0 {
                             HStack {Text(model.isRaw && DenoiseEngine.hasLocalLinearModel() ? "本地模型 · 实验" : "AI 降噪");Spacer();Text("\(Int(model.strength*100))").monospacedDigit().foregroundStyle(.secondary)}
                             Slider(value:$model.strength,in:0...1,step:0.05)
+                            Toggle("Core ML 加速",isOn:$model.accelerate).font(.subheadline)
+                            if !model.backend.isEmpty {Text(model.backend).font(.caption).foregroundStyle(.secondary)}
                         } else {
                             Text(model.lens).font(.subheadline)
                             Text(model.lensStatus).font(.caption).foregroundStyle(.secondary)
@@ -380,7 +389,7 @@ struct StudioView: View {
         .fileImporter(isPresented:$showFiles,allowedContentTypes:[.image,.data],allowsMultipleSelection:false) { result in if case .success(let urls)=result,let url=urls.first {model.load(url)} }
         .onChange(of:photo) { _, item in Task { if let data = try? await item?.loadTransferable(type:Data.self) { let ext=item?.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg";let url=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+"."+ext);do {try data.write(to:url);model.load(url);try? FileManager.default.removeItem(at:url)}catch {model.message=error.localizedDescription} } } }
         .sheet(isPresented:$share) { if let url=model.result { ShareSheet(url:url) } }
-        .alert("净影 0.4.1",isPresented:$about) {
+        .alert("净影 0.5",isPresented:$about) {
             Button("完成",role:.cancel){}
         } message: {Text("离线 RAW / JPEG 降噪\nRawNIND · NIND · LibRaw\nCPU 推理 · GPL-3.0\n原片不会被覆盖")}
     }

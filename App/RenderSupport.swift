@@ -71,15 +71,15 @@ struct RenderEstimate {
         }
     }
     func finish(success:Bool,notify:Bool) {
+        if success && notify {
+            let content=UNMutableNotificationContent();content.title="净影 · 渲染完成";content.body="整张照片已处理，可打开净影导出。";content.sound = .default
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier:UUID().uuidString,content:content,trigger:UNTimeIntervalNotificationTrigger(timeInterval:1,repeats:false)))
+        }
         if #available(iOS 26.0,*),let task=task as? BGContinuedProcessingTask,success {task.progress.completedUnitCount=1000}
         task?.setTaskCompleted(success:success);task=nil
         if let identifier {BGTaskScheduler.shared.cancel(taskRequestWithIdentifier:identifier)};identifier=nil
         if assertion != .invalid {UIApplication.shared.endBackgroundTask(assertion);assertion = .invalid}
         cancelWork=nil;launchWork=nil
-        if success && notify {
-            let content=UNMutableNotificationContent();content.title="净影 · 渲染完成";content.body="整张照片已处理，可打开净影导出。";content.sound = .default
-            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier:UUID().uuidString,content:content,trigger:UNTimeIntervalNotificationTrigger(timeInterval:1,repeats:false)))
-        }
     }
     nonisolated func userNotificationCenter(_ center:UNUserNotificationCenter,willPresent notification:UNNotification) async -> UNNotificationPresentationOptions {[.banner,.sound]}
 }

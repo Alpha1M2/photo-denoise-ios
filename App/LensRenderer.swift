@@ -4,14 +4,19 @@ import ImageIO
 
 enum LensRenderer {
     struct Metadata {
-        var lens = "", focal = 0.0, aperture = 0.0
+        var lens = "", focal = 0.0, aperture = 0.0, focal35=0.0, distance=0.0
+        var camera="",isRaw=false,orientation=1
         init(_ url:URL) {
             if let src=CGImageSourceCreateWithURL(url as CFURL,nil),let p=CGImageSourceCopyPropertiesAtIndex(src,0,nil) as? [String:Any],let e=p[kCGImagePropertyExifDictionary as String] as? [String:Any] {
                 lens=e[kCGImagePropertyExifLensModel as String] as? String ?? ""
                 focal=(e[kCGImagePropertyExifFocalLength as String] as? NSNumber)?.doubleValue ?? 0
                 aperture=(e[kCGImagePropertyExifFNumber as String] as? NSNumber)?.doubleValue ?? 0
+                focal35=(e[kCGImagePropertyExifFocalLenIn35mmFilm as String] as? NSNumber)?.doubleValue ?? 0
+                orientation=(p[kCGImagePropertyOrientation as String] as? NSNumber)?.intValue ?? 1
             }
-            if lens.isEmpty || focal<=0 || aperture<=0,let raw=DenoiseEngine.rawMetadata(url) {
+            if let raw=DenoiseEngine.rawMetadata(url) {
+                isRaw=true;camera=raw["camera"] as? String ?? ""
+                if focal35<=0 {focal35=(raw["focal35"] as? NSNumber)?.doubleValue ?? 0}
                 if lens.isEmpty {lens=raw["lens"] as? String ?? ""}
                 if focal<=0 {focal=(raw["focal"] as? NSNumber)?.doubleValue ?? 0}
                 if aperture<=0 {aperture=(raw["aperture"] as? NSNumber)?.doubleValue ?? 0}
@@ -20,6 +25,7 @@ enum LensRenderer {
         var matches24105:Bool { lens.uppercased().contains("FE 24-105MM") && lens.uppercased().contains("G OSS") && focal>=24 && focal<=105 }
     }
     static func supports(_ url:URL)->Bool {
+        if LocalLensProfiles.profile(Metadata(url)) != nil{return true}
         if let raw=CIRAWFilter(imageURL:url), raw.isLensCorrectionSupported{return true}
         return Metadata(url).matches24105
     }
@@ -58,6 +64,11 @@ enum LensRenderer {
     }
     static func correctedImage(_ source:URL,correct:Bool=true) throws -> CIImage {
         let meta=Metadata(source)
+        if correct,let profile=LocalLensProfiles.profile(meta) {
+            // Decode with LibRaw to avoid applying Apple's correction a second time.
+            let image=try DenoiseEngine.rawLinearImage(source)
+            return try LocalLensProfiles.apply(image,meta:meta,profile:profile)
+        }
         var image:CIImage?
         var systemCorrected=false
         if let raw=CIRAWFilter(imageURL:source) {

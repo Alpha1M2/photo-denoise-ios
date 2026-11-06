@@ -10,6 +10,11 @@
 static NSError *failure(NSString*s){return [NSError errorWithDomain:@"JingYing" code:1 userInfo:@{NSLocalizedDescriptionKey:s}];}
 static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0)n=-n;if(n>=size)n=2*size-2-n;}return n;}
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
+@interface DenoiseEngine ()
+@property(nonatomic,strong) ORTEnv *cachedEnvironment;
+@property(nonatomic,strong) ORTSession *cachedSession;
+@property(nonatomic,copy) NSString *cachedSessionKey;
+@end
 @implementation DenoiseEngine
 + (NSString*)testLinearFixture {
  const int w=601,h=319;std::vector<uint16_t> pixels((size_t)w*h*4);
@@ -69,7 +74,19 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  auto reader=std::make_unique<LibRaw>();if(reader->open_file(source.fileSystemRepresentation)!=LIBRAW_SUCCESS)return nil;
  auto&d=reader->imgdata;
  NSString*lens=[NSString stringWithUTF8String:d.lens.Lens] ?: @"";
- return @{@"lens":lens,@"focal":@(d.other.focal_len),@"aperture":@(d.other.aperture)};
+ return @{@"lens":lens,@"focal":@(d.other.focal_len),@"aperture":@(d.other.aperture),@"camera":[NSString stringWithUTF8String:d.idata.model] ?: @"",@"focal35":@(d.lens.FocalLengthIn35mmFormat)};
+}
++ (CIImage*)rawLinearImage:(NSURL*)source error:(NSError**)error {
+ auto reader=std::make_unique<LibRaw>();auto&p=reader->imgdata.params;p.use_camera_wb=1;p.no_auto_bright=1;p.output_color=1;p.output_bps=16;p.gamm[0]=1;p.gamm[1]=1;
+ int rc=reader->open_file(source.fileSystemRepresentation);if(!rc)rc=reader->unpack();if(!rc)rc=reader->dcraw_process();
+ if(rc){if(error)*error=failure(@"RAW 线性解码失败");return nil;}
+ libraw_processed_image_t*im=reader->dcraw_make_mem_image(&rc);
+ if(!im||rc||im->colors!=3||im->bits!=16){if(im)LibRaw::dcraw_clear_mem(im);if(error)*error=failure(@"RAW 线性格式不支持");return nil;}
+ size_t count=(size_t)im->width*im->height;NSMutableData*data=[NSMutableData dataWithLength:count*8];uint16_t*dst=(uint16_t*)data.mutableBytes,*src=(uint16_t*)im->data;
+ for(size_t i=0;i<count;i++){for(int c=0;c<3;c++)dst[i*4+c]=src[i*3+c];dst[i*4+3]=65535;}
+ CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
+ CIImage*image=[CIImage imageWithBitmapData:data bytesPerRow:im->width*8 size:CGSizeMake(im->width,im->height) format:kCIFormatRGBA16 colorSpace:cs];
+ CGColorSpaceRelease(cs);LibRaw::dcraw_clear_mem(im);return image;
 }
 + (BOOL)renderLinearRaw:(NSURL*)source destination:(NSURL*)destination error:(NSError**)error {
  auto reader=std::make_unique<LibRaw>();auto&p=reader->imgdata.params;p.use_camera_wb=1;p.no_auto_bright=1;p.output_color=1;p.output_bps=16;p.gamm[0]=1;p.gamm[1]=1;
@@ -121,11 +138,23 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  BOOL localLinear=self.useLocalLinearModel && !raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"] && [DenoiseEngine hasLocalLinearModel];
  NSString*model=[[NSBundle mainBundle] pathForResource:localLinear?@"local-linear":(raw?@"raw":@"rgb") ofType:@"onnx"];
  if(!model){if(error)*error=failure(@"安装包缺少 AI 模型。");return nil;}
+ NSString*sessionKey=[NSString stringWithFormat:@"%@|%d",model,self.accelerate];
+ ORTSession*session=[self.cachedSessionKey isEqualToString:sessionKey]?self.cachedSession:nil;
+ if(!session){
  ORTEnv*env=[[ORTEnv alloc] initWithLoggingLevel:ORTLoggingLevelWarning error:error];if(!env)return nil;
  ORTSessionOptions*opts=[[ORTSessionOptions alloc] initWithError:error];if(!opts)return nil;
  [opts setIntraOpNumThreads:2 error:nil];
- // Conservative CPU baseline; accelerator support must pass device testing before enabled by default.
- ORTSession*session=[[ORTSession alloc] initWithEnv:env modelPath:model sessionOptions:opts error:error];if(!session)return nil;
+ self.backendName=@"CPU";
+ if(self.accelerate){
+   NSError*providerError=nil;
+   if([opts appendCoreMLExecutionProviderWithOptionsV2:@{@"MLComputeUnits":@"CPUAndNeuralEngine",@"ModelFormat":@"MLProgram",@"RequireStaticInputShapes":@"1"} error:&providerError])self.backendName=@"Core ML · 自动调度";
+ }
+ NSError*sessionError=nil;
+ session=[[ORTSession alloc] initWithEnv:env modelPath:model sessionOptions:opts error:&sessionError];
+ if(!session&&self.accelerate){opts=[[ORTSessionOptions alloc] initWithError:error];[opts setIntraOpNumThreads:2 error:nil];session=[[ORTSession alloc] initWithEnv:env modelPath:model sessionOptions:opts error:&sessionError];self.backendName=@"CPU · 加速不可用";}
+ if(!session){if(error)*error=sessionError;return nil;}
+ self.cachedSession=session;self.cachedEnvironment=env;self.cachedSessionKey=sessionKey;
+ }
  NSString*inName=[[session inputNamesWithError:error] firstObject];NSString*outName=[[session outputNamesWithError:error] firstObject];if(!inName||!outName)return nil;
  int tile=localLinear?512:(raw?512:768), pad=localLinear?112:32, core=tile-2*pad, channels=raw?4:3;
  bool linear=!raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"];std::vector<uint16_t> rgb16;
