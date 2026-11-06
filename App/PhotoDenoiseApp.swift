@@ -14,7 +14,7 @@ import ImageIO
     @Published var result: URL?
     @Published var before: UIImage?
     @Published var after: UIImage?
-    @Published var strength: Double = 0.35
+    @Published var strength: Double = 0.20
     @Published var busy = false
     @Published var progress: Double = 0
     @Published var message = "未导入照片"
@@ -22,13 +22,11 @@ import ImageIO
     @Published var lensStatus = "镜头校正尚未检测"
     @Published var correctionAvailable = false
     @Published var correction = false
-    @Published var centerX = 0.5
-    @Published var centerY = 0.5
-    @Published var previewMode = false
+    @Published var cancelling = false
     let engine = DenoiseEngine()
     var isRaw: Bool { ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
     let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
+    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
     init() {
         if smoke { Task { @MainActor in
             let raw=ProcessInfo.processInfo.arguments.contains("--smoke-raw")
@@ -46,8 +44,27 @@ import ImageIO
                     CGImageDestinationFinalize(dst)
                 } else {try? image.jpegData(compressionQuality:1)?.write(to:url)}
             }
+            if ProcessInfo.processInfo.arguments.contains("--smoke-zoom") {
+                let v=PhotoViewport(frame:CGRect(x:0,y:0,width:320,height:400));v.layoutIfNeeded()
+                let im=UIImage(contentsOfFile:url.path)!;v.show(im,identity:url);v.setZoomScale(3,animated:false);v.contentOffset=CGPoint(x:150,y:210)
+                let offset=v.contentOffset,scale=v.zoomScale
+                for _ in 0..<20 {v.show(UIImage(cgImage:im.cgImage!),identity:url);v.layoutIfNeeded()}
+                reportSmoke(v.contentOffset==offset && v.zoomScale==scale,"Viewport comparison retention");return
+            }
+            if ProcessInfo.processInfo.arguments.contains("--smoke-cancel") {
+                DispatchQueue.global().async {
+                    let worker=DenoiseEngine();let target=url.deletingLastPathComponent().appendingPathComponent(UUID().uuidString+".jpg")
+                    var cancelled=false
+                    do {_ = try worker.process(url,destination:target,strength:0.2,raw:false,preview:false,center:.zero,progress:{_ in worker.cancelled=true})}catch{cancelled=worker.cancelled}
+                    let absent = !FileManager.default.fileExists(atPath:target.path)
+                    worker.cancelled=false
+                    let recovered=(try? worker.process(url,destination:target,strength:0,raw:false,preview:false,center:.zero,progress:{_ in})) != nil
+                    let ok=cancelled && absent && recovered
+                    Task{@MainActor in self.reportSmoke(ok,"Cancel during processing and restart")}
+                };return
+            }
             load(url)
-            if ProcessInfo.processInfo.arguments.contains("--smoke-lens"){correctedJPEG()}else{run(preview:true)}
+            if ProcessInfo.processInfo.arguments.contains("--smoke-lens"){correctedJPEG()}else{run()}
         } }
     }
     func reportSmoke(_ ok:Bool,_ text:String) {
@@ -61,7 +78,7 @@ import ImageIO
         do {
             let target = folder.appendingPathComponent(UUID().uuidString + "." + url.pathExtension)
             try FileManager.default.copyItem(at: url, to: target)
-            source = target; result = nil; after = nil; previewMode = false
+            source = target; result = nil; after = nil
             before = Self.thumbnail(target)
             if let s = CGImageSourceCreateWithURL(target as CFURL, nil), let props = CGImageSourceCopyPropertiesAtIndex(s, 0, nil) as? [String: Any] {
                 let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any]
@@ -76,44 +93,39 @@ import ImageIO
         } catch { message = error.localizedDescription }
     }
     nonisolated static func thumbnail(_ url: URL) -> UIImage? {
-        if let s = CGImageSourceCreateWithURL(url as CFURL, nil), let cg = CGImageSourceCreateThumbnailAtIndex(s, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1600, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) { return UIImage(cgImage: cg) }
+        if let s = CGImageSourceCreateWithURL(url as CFURL, nil), let cg = CGImageSourceCreateThumbnailAtIndex(s, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 10000, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) { return UIImage(cgImage: cg) }
         if let raw = CIRAWFilter(imageURL: url), let image = raw.outputImage {
-            let scale = min(1,1600/image.extent.width)
+            let scale = min(1,10000/image.extent.width)
             let small = image.transformed(by: CGAffineTransform(scaleX: scale,y: scale))
             if let cg = CIContext().createCGImage(small, from: small.extent) { return UIImage(cgImage: cg) }
         }
         return DenoiseEngine.rawPreview(url)
     }
-    func run(preview: Bool) {
-        guard let source, !busy else { return }
-        engine.cancelled=false;busy = true; progress = 0; result = nil; after = nil; previewMode = preview
-        message = preview ? "正在生成预览…" : "正在处理全尺寸…"
-        let raw = isRaw, amount = Float(strength), center = CGPoint(x:centerX,y:centerY)
-        let target = folder.appendingPathComponent("\(preview ? "preview" : "denoised")-\(UUID().uuidString).\(raw ? "dng" : "jpg")")
-        let engine = self.engine
-        UIApplication.shared.isIdleTimerDisabled = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let start = Date()
+    func cancel() {
+        guard busy,!cancelling else{return}
+        cancelling=true;engine.cancelled=true;message="正在取消…"
+    }
+    func run() {
+        guard let source,!busy else{return}
+        if correction && correctionAvailable {correctedJPEG();return}
+        engine.cancelled=false;cancelling=false;busy=true;progress=0
+        message="正在降噪…"
+        let raw=isRaw,amount=Float(strength),engine=self.engine
+        let target=folder.appendingPathComponent("denoised-\(UUID().uuidString).\(raw ? "dng" : "jpg")")
+        UIApplication.shared.isIdleTimerDisabled=true
+        DispatchQueue.global(qos:.userInitiated).async {
+            let start=Date()
             do {
-                if preview {
-                    let reference=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".\(raw ? "dng" : "jpg")")
-                    let referenceURL=try engine.process(source,destination:reference,strength:0,raw:raw,preview:true,center:center,progress:{_ in})
-                    let originalPatch=Self.thumbnail(referenceURL)
-                    try? FileManager.default.removeItem(at:reference)
-                    Task{@MainActor in self.before=originalPatch}
-                    if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
-                } else {let full=Self.thumbnail(source);Task{@MainActor in self.before=full}}
-                let output = try engine.process(source, destination: target, strength: amount, raw: raw, preview: preview, center: center, progress: { value in
-                    Task { @MainActor in self.progress = value }
-                })
-                let image = Self.thumbnail(output)
-                Task { @MainActor in
-                    self.after=image; self.result=preview ? nil : output; self.busy=false
-                    self.message="完成，用时 \(Int(Date().timeIntervalSince(start))) 秒。\(preview ? "局部预览" : "可导出")"
+                let output=try autoreleasepool {try engine.process(source,destination:target,strength:amount,raw:raw,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in if !self.cancelling {self.progress=value}}})}
+                if engine.cancelled {try? FileManager.default.removeItem(at:output);throw LensRenderer.error("已取消")}
+                let image=autoreleasepool {Self.thumbnail(output)}
+                Task{@MainActor in
+                    defer {self.busy=false;self.cancelling=false;UIApplication.shared.isIdleTimerDisabled=false}
+                    guard !engine.cancelled else{try? FileManager.default.removeItem(at:output);self.message="已取消";return}
+                    self.after=image;self.result=output;self.message="完成 · \(Int(Date().timeIntervalSince(start))) 秒"
                     self.reportSmoke(image != nil,self.message)
-                    UIApplication.shared.isIdleTimerDisabled=false
                 }
-            } catch { Task { @MainActor in self.busy=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false } }
+            }catch{Task{@MainActor in self.busy=false;self.cancelling=false;self.message=engine.cancelled ? "已取消" : error.localizedDescription;self.reportSmoke(false,self.message);UIApplication.shared.isIdleTimerDisabled=false}}
         }
     }
     func saveToPhotos() {
@@ -132,7 +144,7 @@ import ImageIO
     }
     func correctedJPEG() {
         guard let source,!busy,correctionAvailable else{return}
-        engine.cancelled=false;busy=true;progress=0;message="正在校正显影，再进行 JPEG/RGB AI 降噪…"
+        engine.cancelled=false;cancelling=false;busy=true;progress=0;message="正在校正显影，再进行 JPEG/RGB AI 降噪…"
         let temp=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".tiff")
         let target=folder.appendingPathComponent("corrected-\(UUID().uuidString).dng")
         let engine=self.engine,amount=Float(strength)
@@ -142,13 +154,14 @@ import ImageIO
             do {
                 try LensRenderer.renderCorrected(source,to:temp)
                 if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
-                let output=try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in self.progress=value}})
+                let output=try autoreleasepool {try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in if !self.cancelling {self.progress=value}}})}
+                if engine.cancelled {try? FileManager.default.removeItem(at:output);throw LensRenderer.error("已取消")}
                 let image=Self.thumbnail(output)
-                Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="线性 DNG 已就绪";if self.smoke {
+                Task{@MainActor in guard !engine.cancelled else{try? FileManager.default.removeItem(at:output);self.busy=false;self.cancelling=false;self.message="已取消";UIApplication.shared.isIdleTimerDisabled=false;return};self.after=image;self.result=output;self.busy=false;self.cancelling=false;self.message="线性 DNG 已就绪";if self.smoke {
                     let apple=CIRAWFilter(imageURL:output)?.outputImage
                     self.reportSmoke(apple != nil && image != nil,apple == nil ? "Apple RAW decoder rejected linear DNG" : self.message)
                 };UIApplication.shared.isIdleTimerDisabled=false}
-            }catch {Task{@MainActor in self.busy=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false}}
+            }catch {Task{@MainActor in self.busy=false;self.cancelling=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false}}
         }
     }
 }
@@ -175,12 +188,11 @@ struct StudioView: View {
                 ZStack {
                     Color.black
                     if let image=compare ? model.before : (model.after ?? model.before) {
-                        ZoomImage(image:image)
+                        ZoomImage(image:image,identity:model.source)
                         VStack { HStack {
                             Text(compare ? "原片" : (model.after == nil ? "原片" : "降噪后")).font(.caption)
                                 .padding(.horizontal,10).padding(.vertical,5).background(.black.opacity(0.65),in:Capsule())
                             Spacer()
-                            if model.previewMode {Text("局部预览").font(.caption).padding(6).background(.black.opacity(0.65),in:Capsule())}
                         }; Spacer() }.padding(12).allowsHitTesting(false)
                     } else {
                         VStack(spacing:14) {
@@ -195,7 +207,7 @@ struct StudioView: View {
                         .disabled(model.before==nil).tint(compare ? accent : .white)
                     Spacer()
                     if model.busy {Text("\(Int(model.progress*100))%").monospacedDigit()}
-                    else {Text(model.previewMode ? "1024 px" : "全尺寸").foregroundStyle(.secondary)}
+                    else {Text("全尺寸").foregroundStyle(.secondary)}
                 }.font(.caption).padding(.horizontal,20).frame(height:38)
                 Divider()
                 Picker("调整",selection:$panel) {Text("细节").tag(0);Text("光学").tag(1)}
@@ -205,12 +217,6 @@ struct StudioView: View {
                         if panel==0 {
                             HStack {Text("AI 降噪");Spacer();Text("\(Int(model.strength*100))").monospacedDigit().foregroundStyle(.secondary)}
                             Slider(value:$model.strength,in:0...1,step:0.05)
-                            DisclosureGroup("预览区域") {
-                                VStack(spacing:6) {
-                                    HStack {Text("水平").font(.caption);Slider(value:$model.centerX,in:0...1)}
-                                    HStack {Text("垂直").font(.caption);Slider(value:$model.centerY,in:0...1)}
-                                }.padding(.top,8)
-                            }.font(.subheadline)
                         } else {
                             Text(model.lens).font(.subheadline)
                             Text(model.lensStatus).font(.caption).foregroundStyle(.secondary)
@@ -227,13 +233,9 @@ struct StudioView: View {
                     Text(model.message).font(.caption2).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth:.infinity,alignment:.leading)
                     HStack(spacing:12) {
                         if model.busy {
-                            Button("取消") {model.engine.cancelled=true}.frame(maxWidth:.infinity).buttonStyle(.bordered)
+                            Button(model.cancelling ? "正在取消…" : "取消") {model.cancel()}.disabled(model.cancelling).frame(maxWidth:.infinity).buttonStyle(.bordered)
                         } else {
-                            Button("预览") {compare=false;model.run(preview:true)}.frame(maxWidth:.infinity).buttonStyle(.bordered)
-                            Button(panel==1 && model.correction ? "校正并降噪" : "应用降噪") {
-                                compare=false
-                                if panel==1 && model.correction {model.correctedJPEG()}else{model.run(preview:false)}
-                            }.frame(maxWidth:.infinity).buttonStyle(.borderedProminent)
+                            Button("降噪") {compare=false;model.run()}.frame(maxWidth:.infinity).buttonStyle(.borderedProminent)
                         }
                     }.disabled(model.source==nil).controlSize(.regular)
                     Divider()
@@ -258,10 +260,32 @@ struct ShareSheet: UIViewControllerRepresentable {
     func makeUIViewController(context:Context)->UIActivityViewController { UIActivityViewController(activityItems:[url],applicationActivities:nil) }
     func updateUIViewController(_ vc:UIActivityViewController,context:Context){}
 }
+final class PhotoViewport:UIScrollView,UIScrollViewDelegate {
+    let picture=UIImageView()
+    var identity:URL?
+    private var canvas=CGSize.zero
+    override init(frame:CGRect){super.init(frame:frame);delegate=self;minimumZoomScale=1;maximumZoomScale=32;picture.contentMode = .scaleAspectFit;addSubview(picture);alwaysBounceHorizontal=true;alwaysBounceVertical=true}
+    required init?(coder:NSCoder){fatalError()}
+    func viewForZooming(in scrollView:UIScrollView)->UIView?{picture}
+    override func layoutSubviews(){
+        super.layoutSubviews()
+        guard bounds.size != canvas else{return}
+        let zoom=zoomScale,old=canvas,offset=contentOffset
+        setZoomScale(1,animated:false);canvas=bounds.size;picture.frame=CGRect(origin:.zero,size:canvas);contentSize=canvas
+        setZoomScale(zoom,animated:false)
+        if old.width>0 && old.height>0 {contentOffset=CGPoint(x:offset.x*canvas.width/old.width,y:offset.y*canvas.height/old.height)}
+    }
+    func show(_ image:UIImage,identity:URL?){
+        let changed=self.identity != identity
+        self.identity=identity
+        if changed {setZoomScale(1,animated:false);contentOffset = .zero}
+        // Image replacement never changes the canvas, zoom or content offset.
+        picture.image=image
+    }
+}
 struct ZoomImage:UIViewRepresentable {
     let image:UIImage
-    func makeCoordinator()->Coordinator{Coordinator()}
-    func makeUIView(context:Context)->UIScrollView{let v=UIScrollView();v.delegate=context.coordinator;v.minimumZoomScale=1;v.maximumZoomScale=12;let im=UIImageView();im.contentMode = .scaleAspectFit;im.tag=9;v.addSubview(im);return v}
-    func updateUIView(_ view:UIScrollView,context:Context){guard let im=view.viewWithTag(9) as? UIImageView else{return};if im.image !== image {view.zoomScale=1;im.image=image};im.frame=view.bounds;view.contentSize=view.bounds.size}
-    class Coordinator:NSObject,UIScrollViewDelegate{func viewForZooming(in scrollView:UIScrollView)->UIView?{scrollView.viewWithTag(9)}}
+    let identity:URL?
+    func makeUIView(context:Context)->PhotoViewport{PhotoViewport(frame:.zero)}
+    func updateUIView(_ view:PhotoViewport,context:Context){view.show(image,identity:identity)}
 }

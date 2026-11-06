@@ -12,7 +12,7 @@ static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @implementation DenoiseEngine
 + (UIImage*)rawPreview:(NSURL*)url {
- auto owner=std::make_unique<LibRaw>();auto&reader=*owner;reader.imgdata.params.half_size=1;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
+ auto owner=std::make_unique<LibRaw>();auto&reader=*owner;reader.imgdata.params.half_size=0;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
  if(reader.open_file(url.fileSystemRepresentation)||reader.unpack()||reader.dcraw_process())return nil;
  int rc=0;libraw_processed_image_t*p=reader.dcraw_make_mem_image(&rc);
  if(!p||rc||p->type!=LIBRAW_IMAGE_BITMAP||p->colors!=3||p->bits!=8){if(p)LibRaw::dcraw_clear_mem(p);return nil;}
@@ -27,6 +27,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  return dng::write(url.fileSystemRepresentation,p,128,128,"SONY","ILCE-1M2",m,n,1);
 }
 - (NSURL*)process:(NSURL*)source destination:(NSURL*)destination strength:(float)strength raw:(BOOL)raw preview:(BOOL)preview center:(CGPoint)center progress:(void(^)(double))progress error:(NSError**)error {
+ if(self.cancelled){if(error)*error=failure(@"已取消");return nil;}
  strength=std::clamp(strength,0.f,1.f);
  if([[NSFileManager defaultManager] fileExistsAtPath:destination.path]){if(error)*error=failure(@"输出文件已存在，请使用新文件名。");return nil;}
  NSString*model=[[NSBundle mainBundle] pathForResource:raw?@"raw":@"rgb" ofType:@"onnx"];
@@ -110,6 +111,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    }
    progress((double)++done/total);
  }}
+ if(self.cancelled){CGColorSpaceRelease(color);if(error)*error=failure(@"已取消");return nil;}
  BOOL ok=NO;
  if(raw){auto&c=reader->imgdata.color;double matrix[9],neutral[3];for(int i=0;i<9;i++)matrix[i]=c.cam_xyz[i/3][i%3];double g=c.cam_mul[1]>0?c.cam_mul[1]:1;for(int i=0;i<3;i++)neutral[i]=c.cam_mul[i]>0?g/c.cam_mul[i]:1;
    int flip=reader->imgdata.sizes.flip,orientation=flip==3?3:(flip==5?8:(flip==6?6:1));

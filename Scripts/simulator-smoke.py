@@ -9,7 +9,7 @@ run('xcrun','simctl','install',udid,'build-sim/Build/Products/Release-iphonesimu
 out=pathlib.Path('smoke-output');out.mkdir(exist_ok=True)
 container=pathlib.Path(run('xcrun','simctl','get_app_container',udid,'io.alpha1m2.photodenoise','data'))
 status=container/'Documents/smoke-status.json'
-for mode in ['rgb','raw','lens']:
+for mode in ['cancel','zoom','rgb','raw','lens']:
     subprocess.run(['xcrun','simctl','terminate',udid,'io.alpha1m2.photodenoise'],check=False)
     status.unlink(missing_ok=True)
     run('xcrun','simctl','launch',udid,'io.alpha1m2.photodenoise','--smoke-'+mode)
