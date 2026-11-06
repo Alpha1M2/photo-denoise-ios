@@ -25,7 +25,41 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  int maximum=0,flippedMaximum=0,first=-1;
  if(ok){const uint16_t*p=(const uint16_t*)((const uint8_t*)out.bytes+out.length-length);first=p[0];for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++){maximum=std::max(maximum,std::abs((int)p[i*3+c]-(int)pixels[i*4+c]));size_t flipped=(h-1-i/w)*w+i%w;flippedMaximum=std::max(flippedMaximum,std::abs((int)p[i*3+c]-(int)pixels[flipped*4+c]));}}
  BOOL passed=ok && maximum<=3;
- [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0]];
+ NSURL*crop=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".dng"]]];
+ engine.requestedPreviewRegion=CGRectMake(.7,.1,.2,.2);
+ BOOL previewOK=[engine process:src destination:crop strength:1 raw:NO preview:YES center:CGPointZero progress:^(double v){} error:nil]!=nil;
+ CGRect region=engine.processedRegion;int rx=std::lround(region.origin.x*w),ry=std::lround(region.origin.y*h),rw=std::lround(region.size.width*w),rh=std::lround(region.size.height*h);
+ NSData*previewData=[NSData dataWithContentsOfURL:crop];size_t cropBytes=(size_t)rw*rh*6;
+ if(!previewData||previewData.length<cropBytes||engine.workUnits>=engine.fullWorkUnits)previewOK=NO;
+ if(previewOK){const uint16_t*p=(const uint16_t*)((const uint8_t*)previewData.bytes+previewData.length-cropBytes);for(int y=0;y<rh;y++)for(int x=0;x<rw;x++)for(int c=0;c<3;c++)if(std::abs((int)p[((size_t)y*rw+x)*3+c]-(int)pixels[((size_t)(ry+y)*w+rx+x)*4+c])>1)previewOK=NO;}
+ [[NSFileManager defaultManager] removeItemAtURL:crop error:nil];
+ engine.requestedPreviewRegion=CGRectMake(0,0,1,1);
+ NSURL*cancelledOutput=[engine process:src destination:crop strength:1 raw:NO preview:YES center:CGPointZero progress:^(double v){if(v>0)engine.cancelled=YES;} error:nil];
+ BOOL cancelOK=cancelledOutput==nil&&![[NSFileManager defaultManager] fileExistsAtPath:crop.path];
+ passed=passed&&previewOK&&cancelOK;
+ // Compare banded preparation against a single full-frame render to detect Y flips and seams.
+ NSURL*tiff=[src URLByAppendingPathExtension:@"tiff"],*prepared=[src URLByAppendingPathExtension:@"prepared"];
+ CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);CIContext*ctx=[CIContext contextWithOptions:@{kCIContextWorkingFormat:@(kCIFormatRGBAf)}];
+ NSData*bitmap=[NSData dataWithBytes:pixels.data() length:pixels.size()*2];CIImage*image=[CIImage imageWithBitmapData:bitmap bytesPerRow:w*8 size:CGSizeMake(w,h) format:kCIFormatRGBA16 colorSpace:cs];
+ BOOL bands=[ctx writeTIFFRepresentationOfImage:image toURL:tiff format:kCIFormatRGBA16 colorSpace:cs options:@{} error:nil]&&[DenoiseEngine prepareImageBuffer:tiff destination:prepared linear:YES error:nil];
+ std::vector<uint16_t> expected((size_t)w*h*4);CIImage*decoded=[CIImage imageWithContentsOfURL:tiff];if(decoded)[ctx render:decoded toBitmap:expected.data() rowBytes:w*8 bounds:decoded.extent format:kCIFormatRGBA16 colorSpace:cs];else bands=NO;
+ NSData*preparedData=[NSData dataWithContentsOfURL:prepared];if(preparedData.length!=12+(size_t)w*h*6)bands=NO;
+ if(bands){const uint16_t*p=(const uint16_t*)((const uint8_t*)preparedData.bytes+12);for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++)if(std::abs((int)p[i*3+c]-(int)expected[i*4+c])>1)bands=NO;}
+ CGColorSpaceRelease(cs);[[NSFileManager defaultManager] removeItemAtURL:tiff error:nil];[[NSFileManager defaultManager] removeItemAtURL:prepared error:nil];passed=passed&&bands;
+ [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands];
+}
+ + (BOOL)prepareImageBuffer:(NSURL*)source destination:(NSURL*)destination linear:(BOOL)linear error:(NSError**)error {
+ CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];if(!ci){if(error)*error=failure(@"无法读取图像");return NO;}
+ int w=ci.extent.size.width,h=ci.extent.size.height;if(w<1||h<1||(double)w*h>65000000){if(error)*error=failure(@"图像尺寸不支持");return NO;}
+ CGColorSpaceRef cs=CGColorSpaceCreateWithName(linear?kCGColorSpaceLinearSRGB:kCGColorSpaceSRGB);
+ CIContext*ctx=[CIContext contextWithOptions:@{kCIContextWorkingFormat:@(kCIFormatRGBAf),kCIContextCacheIntermediates:@NO}];
+ std::vector<uint16_t> row((size_t)w*4);uint32_t header[3]={0x314c594a,(uint32_t)w,(uint32_t)h};std::ofstream f(destination.fileSystemRepresentation,std::ios::binary);f.write((char*)header,12);
+ // Render bands in display order; inference and TIFF/DNG samples are top-down.
+ const int band=64;std::vector<uint16_t> data((size_t)w*band*4);
+ for(int y=0;y<h;y+=band){int bh=std::min(band,h-y);CGRect rect=CGRectMake(ci.extent.origin.x,ci.extent.origin.y+h-y-bh,w,bh);
+ [ctx render:ci toBitmap:data.data() rowBytes:w*8 bounds:rect format:kCIFormatRGBA16 colorSpace:cs];
+ for(int j=0;j<bh;j++)for(int x=0;x<w;x++)f.write((char*)&data[((size_t)j*w+x)*4],6);}
+ CGColorSpaceRelease(cs);BOOL ok=f.good();if(!ok&&error)*error=failure(@"无法写入图像缓存");return ok;
 }
 + (BOOL)hasLocalLinearModel {return [[NSBundle mainBundle] pathForResource:@"local-linear" ofType:@"onnx"] != nil;}
 + (BOOL)renderLinearRaw:(NSURL*)source destination:(NSURL*)destination error:(NSError**)error {
@@ -101,20 +135,18 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    auto&c=reader->imgdata.color;double green=c.pre_mul[1];
    if(green<=0)green=1;wb[0]=c.pre_mul[0]/green;wb[1]=wb[2]=1;wb[3]=c.pre_mul[2]/green;
    for(int i=0;i<4;i++){int fc=reader->COLOR(cy+i/2,cx+i%2);blacks[i]=c.black+c.cblack[fc];ranges[i]=std::max(1.,(double)c.maximum-blacks[i]);if(wb[i]<=0)wb[i]=1;}
-   if(preview){int pw=std::min(width,1024),ph=std::min(height,1024);cx+=((int)std::clamp(center.x*width-pw/2,0.,(double)(width-pw)))&~1;cy+=((int)std::clamp(center.y*height-ph/2,0.,(double)(height-ph)))&~1;width=pw;height=ph;}
    if((double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"RAW 超过6500万像素限制。");return nil;}
    output.resize((size_t)width*height);
- }else if(localLinear && [source.pathExtension.lowercaseString isEqualToString:@"jyl"]){
+ }else if([source.pathExtension.lowercaseString isEqualToString:@"jyl"]){
    std::ifstream f(source.fileSystemRepresentation,std::ios::binary);uint32_t header[3]={};f.read((char*)header,12);width=header[1];height=header[2];
    if(!f||header[0]!=0x314c594a||width<1||height<1||(double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"Invalid linear RAW buffer");return nil;}
-   rgb16.resize((size_t)width*height*4);output.resize((size_t)width*height*3);std::vector<uint16_t> row((size_t)width*3);
+   rgb16.resize((size_t)width*height*4);if(linear)output.resize((size_t)width*height*3);else rgba.assign((size_t)width*height*4,255);std::vector<uint16_t> row((size_t)width*3);
    for(int y=0;y<height;y++){f.read((char*)row.data(),row.size()*2);for(int x=0;x<width;x++){for(int c=0;c<3;c++)rgb16[((size_t)y*width+x)*4+c]=row[x*3+c];rgb16[((size_t)y*width+x)*4+3]=65535;}}
    if(!f){CGColorSpaceRelease(color);if(error)*error=failure(@"Truncated linear RAW buffer");return nil;}
  }else{
    CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];
    if(!ci){CGColorSpaceRelease(color);if(error)*error=failure(@"无法读取图片。");return nil;}
    CGRect rect=ci.extent;
-   if(preview){CGFloat w=MIN(1024,rect.size.width),h=MIN(1024,rect.size.height);rect=CGRectMake(MAX(0,MIN(rect.size.width-w,center.x*rect.size.width-w/2)),MAX(0,MIN(rect.size.height-h,(1-center.y)*rect.size.height-h/2)),w,h);}
    width=rect.size.width;height=rect.size.height;
    if(width<1||height<1||(double)width*height>65000000){CGColorSpaceRelease(color);if(error)*error=failure(@"图片超过此版本的 6500 万像素限制。");return nil;}
    if(!linear)rgba.resize((size_t)width*height*4);
@@ -122,9 +154,15 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    if(linear){rgb16.resize((size_t)width*height*4);output.resize((size_t)width*height*3);[ctx render:ci toBitmap:rgb16.data() rowBytes:width*4*sizeof(uint16_t) bounds:rect format:kCIFormatRGBA16 colorSpace:color];}else [ctx render:ci toBitmap:rgba.data() rowBytes:width*4 bounds:rect format:kCIFormatRGBA8 colorSpace:color];
  }
  const int W=raw?width/2:width,H=raw?height/2:height;
- auto xs=starts(W,core),ys=starts(H,core);int done=0,total=(int)(xs.size()*ys.size());
+ auto xs=starts(W,core),ys=starts(H,core);self.fullWorkUnits=xs.size()*ys.size();self.sourceSize=CGSizeMake(width,height);
+ int roiX=0,roiY=0,roiW=width,roiH=height;
+ if(preview){CGRect requested=self.requestedPreviewRegion;double rw=requested.size.width>0?requested.size.width*width:1024,rh=requested.size.height>0?requested.size.height*height:1024;double scale=std::min(1.,1024./std::max(rw,rh));roiW=std::max(1,std::min(width,(int)(rw*scale)));roiH=std::max(1,std::min(height,(int)(rh*scale)));double mx=requested.size.width>0?CGRectGetMidX(requested):center.x,my=requested.size.height>0?CGRectGetMidY(requested):center.y;roiX=std::clamp((int)(mx*width-roiW/2),0,width-roiW);roiY=std::clamp((int)(my*height-roiH/2),0,height-roiH);
+ if(raw){roiX&=~1;roiY&=~1;roiW&=~1;roiH&=~1;}
+ int factor=raw?2:1;xs.erase(std::remove_if(xs.begin(),xs.end(),[&](int x){return x*factor>=roiX+roiW||(x+core)*factor<=roiX;}),xs.end());ys.erase(std::remove_if(ys.begin(),ys.end(),[&](int y){return y*factor>=roiY+roiH||(y+core)*factor<=roiY;}),ys.end());}
+ self.processedRegion=CGRectMake((double)roiX/width,(double)roiY/height,(double)roiW/width,(double)roiH/height);
+ int done=0,total=(int)(xs.size()*ys.size());self.workUnits=total;progress(0);
  // Keep an immutable RGB source to avoid tile-to-tile contamination while writing the destination.
- std::vector<uint8_t> original=rgba;
+ std::vector<uint8_t> original=rgb16.empty()?rgba:std::vector<uint8_t>();
  for(int ty:ys)for(int tx:xs){
    if(self.cancelled){CGColorSpaceRelease(color);if(error)*error=failure(@"已取消；原片未修改。");return nil;}
    @autoreleasepool {
@@ -133,11 +171,11 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
      int sx=mirror(tx+x-pad,W),sy=mirror(ty+y-pad,H);
      for(int c=0;c<channels;c++){
        float v;if(raw){int rx=cx+sx*2+c%2,ry=cy+sy*2+c/2;auto&s=reader->imgdata.sizes;unsigned short*row=(unsigned short*)((uint8_t*)reader->imgdata.rawdata.raw_image+(size_t)ry*s.raw_pitch);v=(row[rx]-blacks[c])/ranges[c]*wb[c];}
-       else v=linear?rgb16[((size_t)sy*width+sx)*4+c]/65535.f:original[((size_t)sy*width+sx)*4+c]/255.f;
+       else v=!rgb16.empty()?rgb16[((size_t)sy*width+sx)*4+c]/65535.f:original[((size_t)sy*width+sx)*4+c]/255.f;
        input[((size_t)c*tile+y)*tile+x]=v;sum+=v;
      }
    }
-   if(strength==0 && !linear){
+   if(strength==0 && raw){
      if(raw)for(int y=0;y<std::min(core,H-ty);y++)for(int x=0;x<std::min(core,W-tx);x++)for(int p=0;p<4;p++){
        double v=input[((size_t)p*tile+y+pad)*tile+x+pad]/wb[p];output[((size_t)(ty+y)*2+p/2)*width+(tx+x)*2+p%2]=(uint16_t)std::llround(std::clamp(v,0.,1.)*65535);
      }
@@ -164,6 +202,12 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
    progress((double)++done/total);
  }}
  if(self.cancelled){CGColorSpaceRelease(color);if(error)*error=failure(@"已取消");return nil;}
+ if(preview){
+ int channelsOut=raw?1:3;
+ if(raw||linear){std::vector<uint16_t> cropped((size_t)roiW*roiH*channelsOut);for(int y=0;y<roiH;y++)std::copy_n(output.data()+((size_t)(roiY+y)*width+roiX)*channelsOut,(size_t)roiW*channelsOut,cropped.data()+(size_t)y*roiW*channelsOut);output.swap(cropped);}
+ else {std::vector<uint8_t> cropped((size_t)roiW*roiH*4);for(int y=0;y<roiH;y++)std::copy_n(rgba.data()+((size_t)(roiY+y)*width+roiX)*4,(size_t)roiW*4,cropped.data()+(size_t)y*roiW*4);rgba.swap(cropped);}
+ width=roiW;height=roiH;
+ }
  BOOL ok=NO;
  if(raw){auto&c=reader->imgdata.color;double matrix[9],neutral[3];for(int i=0;i<9;i++)matrix[i]=c.cam_xyz[i/3][i%3];double g=c.cam_mul[1]>0?c.cam_mul[1]:1;for(int i=0;i<3;i++)neutral[i]=c.cam_mul[i]>0?g/c.cam_mul[i]:1;
    int flip=reader->imgdata.sizes.flip,orientation=flip==3?3:(flip==5?8:(flip==6?6:1));

@@ -3,6 +3,12 @@
 NS_ASSUME_NONNULL_BEGIN
 @interface DenoiseEngine : NSObject
 @property(atomic) BOOL cancelled;
+@property(atomic) CGRect requestedPreviewRegion;
+@property(atomic) CGRect processedRegion;
+@property(atomic) CGSize sourceSize;
+@property(atomic) NSInteger workUnits;
+@property(atomic) NSInteger fullWorkUnits;
++ (BOOL)prepareImageBuffer:(NSURL *)source destination:(NSURL *)destination linear:(BOOL)linear error:(NSError **)error;
 @property(atomic) BOOL useLocalLinearModel;
 + (BOOL)hasLocalLinearModel;
 + (BOOL)renderLinearRaw:(NSURL *)source destination:(NSURL *)destination error:(NSError **)error;

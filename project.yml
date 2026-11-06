@@ -10,6 +10,14 @@ targets:
       - path: App
       - path: Models
         buildPhase: resources
+    info:
+      path: App/Info.plist
+      properties:
+        BGTaskSchedulerPermittedIdentifiers:
+          - io.alpha1m2.photodenoise.render.*
+        UIBackgroundModes:
+          - processing
+        NSSupportsLiveActivities: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.alpha1m2.photodenoise
@@ -28,10 +36,12 @@ targets:
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
-        MARKETING_VERSION: '0.3.0'
-        CURRENT_PROJECT_VERSION: '3'
+        MARKETING_VERSION: '0.4.0'
+        CURRENT_PROJECT_VERSION: '4'
         TARGETED_DEVICE_FAMILY: '1,2'
     dependencies:
       - sdk: CoreImage.framework
       - sdk: ImageIO.framework
       - sdk: Accelerate.framework
+      - sdk: BackgroundTasks.framework
+      - sdk: UserNotifications.framework

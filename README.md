@@ -8,7 +8,7 @@ Personal offline iPhone RAW and JPEG AI denoiser. Target: iPhone 14 Pro Max, iOS
 - ImageIO/Core Image JPEG decoding → NIND RGB model → strength blend → sRGB JPEG.
 - Serial overlapped tiles, reflected borders, user cancellation between inference calls, full-size processing, free pan/zoom and comparison without viewport reset.
 - CPU baseline with two inference threads. Neural Engine performance is not claimed. Keep the app in the foreground during processing.
-- Default strength 20%; no sharpening applied. Full-strength denoising can remove real aircraft details.
+- Default strength 50%; no sharpening applied. Full-strength denoising can remove real aircraft details.
 - Output filenames are unique. Original source files are never overwritten; imports are copied to app Documents.
 
 ## Lens correction
@@ -40,3 +40,11 @@ A locally supplied `local-linear.onnx` enables an experimental RAW route: neutra
 No proprietary model or extraction tooling is included in this repository or CI artifacts. The optional backend is not a claim of Lightroom equivalence. Linear sRGB rendering bakes in demosaic and white balance and clips to the output gamut/range; it does not retain all original sensor editing latitude. Public CI uses an independently generated crop-only fixture exclusively in its simulator bundle to test this route, not to demonstrate denoising quality.
 
 Uncorrected local-model RAW uses a private temporary 16-bit RGB buffer to avoid a Core Image TIFF roundtrip before inference. Corrected input still uses Core Image and resampling. A synthetic test validates the direct buffer, tile indexing and DNG samples independently of denoising quality.
+
+## Preview and continued rendering (0.4)
+
+Pan/zoom to a detail, then use Preview. The visible image region selects a native-resolution crop capped at 1024 pixels on the longest side. Only intersecting tiles run, on the same grid and with the same surrounding pixels as full rendering. The patch stays at its image coordinates when panning/comparing; preview output is never exported as a completed full photo. Changing strength requires another preview.
+
+Measured tile times estimate remaining inference work and, after a preview, whole-image processing time. Preparation, writing and thermal/system scheduling can add time. This is an estimate, not a timer promise.
+
+Full renders prepare image buffers in the foreground, then request iOS 26+ BGContinuedProcessingTask for CPU inference. No background GPU entitlement is required. The system may decline or expire the request; the UI reports limited background availability and expiration cancels safely. Older systems have only limited UIKit background time. Do not force-quit the app. Completion sends a local notification if permission was granted and preserves the completed output path. Physical-device background scheduling, signing compatibility and notification delivery still require verification.
