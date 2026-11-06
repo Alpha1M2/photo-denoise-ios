@@ -13,7 +13,7 @@ Personal offline iPhone RAW and JPEG AI denoiser. Target: iPhone 14 Pro Max, iOS
 
 ## Lens correction
 
-Correction is deliberately a separate **rendered JPEG export**, not a warp of the Bayer mosaic. The native DNG export retains sensor geometry. For RAW correction, use Apple's decoder only when it reports lens correction support. Otherwise an exact full-frame FE 24–105mm F4 G OSS profile from Lensfun supplies distortion, transverse CA and vignetting; this fallback crops 4% from each edge. JPEG correction requires explicit opt-in because Sony's in-camera corrections may already be baked in.
+Correction is a separate **16-bit linear RGB DNG export**, not a warp of the Bayer mosaic. The RGB model receives floating-point sRGB; output is inverse-transfer-encoded into linear RGB before DNG serialization. The native DNG export retains sensor geometry. For RAW correction, use Apple's decoder only when it reports lens correction support. Otherwise an exact full-frame FE 24–105mm F4 G OSS profile from Lensfun supplies distortion, transverse CA and vignetting; this fallback crops 4% from each edge. JPEG input correction requires explicit opt-in because Sony's in-camera corrections may already be baked in.
 
 FE 70–200mm F2.8 GM OSS II and FE PZ 16–35mm F4 G have **no substituted profile**. Availability depends on the system decoder for the actual input file. This is not a claim of complete profile support for those lenses. Lens correction and DNG colour must be checked on real files before batch use.
 
@@ -28,3 +28,7 @@ This is an initial implementation; compilation results and device testing are se
 ## Licensing
 
 App source: GPL-3.0-or-later. Model and third-party licenses are described in `THIRD_PARTY.md` and bundled model cards. No model training or online image processing occurs in the app.
+
+## Mobile workflow acceptance
+
+Target: Sony A1 II ARW → denoise and optical correction → linear DNG → native Photos → Snapseed. The requested device reports iOS 27.3. Device Photos and Snapseed compatibility has not been verified. The app includes direct PhotoKit original-file saving; permission is requested only when saving. Simulator decoder success is not equivalent to physical device workflow acceptance.
