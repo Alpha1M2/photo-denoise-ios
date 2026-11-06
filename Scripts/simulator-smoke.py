@@ -15,7 +15,10 @@ for mode in ['rgb','raw','lens']:
     run('xcrun','simctl','launch',udid,'io.alpha1m2.photodenoise','--smoke-'+mode)
     deadline=time.time()+240
     while not status.exists() and time.time()<deadline:time.sleep(2)
-    if not status.exists():raise RuntimeError(mode+' simulator inference timed out')
+    if not status.exists():
+        log=subprocess.run(['xcrun','simctl','spawn',udid,'log','show','--last','5m','--predicate','process == "PhotoDenoise"'],capture_output=True,text=True)
+        (out/(mode+'-failure.log')).write_text(log.stdout+log.stderr)
+        raise RuntimeError(mode+' simulator inference timed out')
     report=json.loads(status.read_text());(out/(mode+'.json')).write_text(json.dumps(report,ensure_ascii=False))
     time.sleep(2)
     run('xcrun','simctl','io',udid,'screenshot',str(out/(mode+'.png')))

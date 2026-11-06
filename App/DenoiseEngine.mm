@@ -12,7 +12,7 @@ static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @implementation DenoiseEngine
 + (UIImage*)rawPreview:(NSURL*)url {
- LibRaw reader;reader.imgdata.params.half_size=1;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
+ auto owner=std::make_unique<LibRaw>();auto&reader=*owner;reader.imgdata.params.half_size=1;reader.imgdata.params.use_camera_wb=1;reader.imgdata.params.output_color=1;reader.imgdata.params.output_bps=8;
  if(reader.open_file(url.fileSystemRepresentation)||reader.unpack()||reader.dcraw_process())return nil;
  int rc=0;libraw_processed_image_t*p=reader.dcraw_make_mem_image(&rc);
  if(!p||rc||p->type!=LIBRAW_IMAGE_BITMAP||p->colors!=3||p->bits!=8){if(p)LibRaw::dcraw_clear_mem(p);return nil;}
