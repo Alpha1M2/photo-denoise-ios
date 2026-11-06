@@ -27,7 +27,7 @@ import ImageIO
     let engine = DenoiseEngine()
     var isRaw: Bool { ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
     let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw")
+    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
     init() {
         if smoke { Task { @MainActor in
             let raw=ProcessInfo.processInfo.arguments.contains("--smoke-raw")
@@ -40,9 +40,13 @@ import ImageIO
                     for y in 0..<96 {for x in 0..<96 {let v=CGFloat((x*17+y*31)%51)/255+0.25;UIColor(white:v,alpha:1).setFill();ctx.fill(CGRect(x:x*8,y:y*8,width:8,height:8))}}
                     ("LOCAL TEST / JPEG" as NSString).draw(at:CGPoint(x:60,y:360),withAttributes:[.font:UIFont.boldSystemFont(ofSize:42),.foregroundColor:UIColor.white])
                 }
-                try? image.jpegData(compressionQuality:1)?.write(to:url)
+                if ProcessInfo.processInfo.arguments.contains("--smoke-lens"),let cg=image.cgImage,let dst=CGImageDestinationCreateWithURL(url as CFURL,UTType.jpeg.identifier as CFString,1,nil) {
+                    CGImageDestinationAddImage(dst,cg,[kCGImagePropertyExifDictionary:[kCGImagePropertyExifLensModel:"FE 24-105mm F4 G OSS",kCGImagePropertyExifFocalLength:24,kCGImagePropertyExifFNumber:4]] as CFDictionary)
+                    CGImageDestinationFinalize(dst)
+                } else {try? image.jpegData(compressionQuality:1)?.write(to:url)}
             }
-            load(url);run(preview:true)
+            load(url)
+            if ProcessInfo.processInfo.arguments.contains("--smoke-lens"){correctedJPEG()}else{run(preview:true)}
         } }
     }
     func reportSmoke(_ ok:Bool,_ text:String) {
@@ -125,8 +129,8 @@ import ImageIO
                 if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
                 let output=try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in self.progress=value}})
                 let image=Self.thumbnail(output)
-                Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="校正并降噪完成。这是显影后的 JPEG，原 RAW 保留。";UIApplication.shared.isIdleTimerDisabled=false}
-            }catch {Task{@MainActor in self.busy=false;self.message=error.localizedDescription;UIApplication.shared.isIdleTimerDisabled=false}}
+                Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="校正并降噪完成。这是显影后的 JPEG，原 RAW 保留。";self.reportSmoke(image != nil,self.message);UIApplication.shared.isIdleTimerDisabled=false}
+            }catch {Task{@MainActor in self.busy=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false}}
         }
     }
 }

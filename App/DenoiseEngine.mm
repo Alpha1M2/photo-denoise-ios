@@ -101,11 +101,18 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  BOOL ok=NO;
  if(raw){auto&c=reader->imgdata.color;double matrix[9],neutral[3];for(int i=0;i<9;i++)matrix[i]=c.cam_xyz[i/3][i%3];double g=c.cam_mul[1]>0?c.cam_mul[1]:1;for(int i=0;i<3;i++)neutral[i]=c.cam_mul[i]>0?g/c.cam_mul[i]:1;
    int flip=reader->imgdata.sizes.flip,orientation=flip==3?3:(flip==5?8:(flip==6?6:1));
-   ok=dng::write(destination.fileSystemRepresentation,output,width,height,reader->imgdata.idata.make,reader->imgdata.idata.model,matrix,neutral,orientation);
+   dng::Metadata meta;meta.lens=reader->imgdata.lens.Lens;meta.focal=reader->imgdata.other.focal_len;meta.aperture=reader->imgdata.other.aperture;meta.exposure=reader->imgdata.other.shutter;meta.iso=reader->imgdata.other.iso_speed;
+   ok=dng::write(destination.fileSystemRepresentation,output,width,height,reader->imgdata.idata.make,reader->imgdata.idata.model,matrix,neutral,orientation,meta);
  }else{
    CGContextRef bitmap=CGBitmapContextCreate(rgba.data(),width,height,8,width*4,color,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrderDefault);CGImageRef im=bitmap?CGBitmapContextCreateImage(bitmap):nil;
-   if(im){CGImageDestinationRef dst=CGImageDestinationCreateWithURL((__bridge CFURLRef)destination,(__bridge CFStringRef)UTTypeJPEG.identifier,1,nil);if(dst){CGImageDestinationAddImage(dst,im,(__bridge CFDictionaryRef)@{(__bridge NSString*)kCGImageDestinationLossyCompressionQuality:@0.97});ok=CGImageDestinationFinalize(dst);CFRelease(dst);}CGImageRelease(im);}if(bitmap)CGContextRelease(bitmap);
+   if(im){
+     NSMutableDictionary*properties=[NSMutableDictionary dictionaryWithDictionary:@{(__bridge NSString*)kCGImageDestinationLossyCompressionQuality:@0.97,(__bridge NSString*)kCGImagePropertyOrientation:@1}];
+     CGImageSourceRef inputSource=CGImageSourceCreateWithURL((__bridge CFURLRef)source,nil);
+     if(inputSource){NSDictionary*sourceProperties=CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(inputSource,0,nil));NSMutableDictionary*exif=[sourceProperties[(__bridge NSString*)kCGImagePropertyExifDictionary] mutableCopy];if(exif){exif[(__bridge NSString*)kCGImagePropertyExifPixelXDimension]=@(width);exif[(__bridge NSString*)kCGImagePropertyExifPixelYDimension]=@(height);properties[(__bridge NSString*)kCGImagePropertyExifDictionary]=exif;}CFRelease(inputSource);}
+     CGImageDestinationRef dst=CGImageDestinationCreateWithURL((__bridge CFURLRef)destination,(__bridge CFStringRef)UTTypeJPEG.identifier,1,nil);
+     if(dst){CGImageDestinationAddImage(dst,im,(__bridge CFDictionaryRef)properties);ok=CGImageDestinationFinalize(dst);CFRelease(dst);}CGImageRelease(im);
+   }if(bitmap)CGContextRelease(bitmap);
  }
- CGColorSpaceRelease(color);if(!ok){if(error)*error=failure(@"写入失败，请检查存储空间。");return nil;}return destination;
+ CGColorSpaceRelease(color);if(!ok){[[NSFileManager defaultManager] removeItemAtURL:destination error:nil];if(error)*error=failure(@"写入失败，请检查存储空间。");return nil;}return destination;
 }
 @end

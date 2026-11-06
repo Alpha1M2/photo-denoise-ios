@@ -9,3 +9,4 @@ Models/*.onnx
 *.log
 local-*
 Scripts/cloud.py
+__pycache__/
