@@ -50,6 +50,11 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  uint32_t header[3]={0x314c594a,w,h};std::ofstream f(src.fileSystemRepresentation,std::ios::binary);f.write((char*)header,12);
  for(size_t i=0;i<(size_t)w*h;i++)f.write((char*)&pixels[i*4],6);BOOL ok=f.good();f.close();
  DenoiseEngine*engine=[DenoiseEngine new];engine.useLocalLinearModel=YES;
+ NSURL*metadataURL=[src URLByAppendingPathExtension:@"dng"];
+ std::vector<uint16_t> sensor(64*64,20000);double cm[9]={1,0,0,0,1,0,0,0,1},wb[3]={1,1,1};dng::Metadata fixture;
+ fixture.lens="Test 70-200mm";fixture.focal=135;fixture.aperture=2.8;fixture.exposure=.001;fixture.iso=12800;fixture.dateTime="2026:01:02 03:04:05";
+ ok=ok&&dng::write(metadataURL.fileSystemRepresentation,sensor,64,64,"SONY","ILCE-1M2",cm,wb,1,fixture);
+ engine.metadataSource=metadataURL;
  if(ok)ok=[engine process:src destination:dst strength:1 raw:NO preview:NO center:CGPointZero progress:^(double v){} error:nil]!=nil;
  NSData*out=[NSData dataWithContentsOfURL:dst];size_t length=(size_t)w*h*6;
  if(!out||out.length<length)ok=NO;
@@ -57,10 +62,14 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(ok){const uint16_t*p=(const uint16_t*)((const uint8_t*)out.bytes+out.length-length);first=p[0];for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++){maximum=std::max(maximum,std::abs((int)p[i*3+c]-(int)pixels[i*4+c]));size_t flipped=(h-1-i/w)*w+i%w;flippedMaximum=std::max(flippedMaximum,std::abs((int)p[i*3+c]-(int)pixels[flipped*4+c]));}}
  CGImageSourceRef check=CGImageSourceCreateWithURL((__bridge CFURLRef)dst,NULL);
  CGImageRef thumbnail=check?CGImageSourceCreateThumbnailAtIndex(check,0,(__bridge CFDictionaryRef)@{(NSString*)kCGImageSourceCreateThumbnailFromImageAlways:@YES,(NSString*)kCGImageSourceThumbnailMaxPixelSize:@1024}):nil;
+ NSDictionary*properties=check?CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(check,0,NULL)):nil;
+ NSDictionary*tiffMetadata=properties[(NSString*)kCGImagePropertyTIFFDictionary],*exifMetadata=properties[(NSString*)kCGImagePropertyExifDictionary];
+ BOOL metadataOK=[tiffMetadata[@"Make"] isEqual:@"SONY"] && [tiffMetadata[@"Model"] isEqual:@"ILCE-1M2"] && [exifMetadata[@"LensModel"] isEqual:@"Test 70-200mm"] && [exifMetadata[@"DateTimeOriginal"] isEqual:@"2026:01:02 03:04:05"];
+ [[NSFileManager defaultManager] removeItemAtURL:metadataURL error:nil];
  BOOL displayOK=thumbnail && CGImageGetWidth(thumbnail)==w && [DenoiseEngine linearBufferPreview:dst]!=nil;
  if(thumbnail)CGImageRelease(thumbnail);if(check)CFRelease(check);
  CIRAWFilter*rawCheck=[CIRAWFilter filterWithImageURL:dst];BOOL decodeOK=rawCheck.outputImage!=nil;
- BOOL passed=ok && maximum<=3 && displayOK && decodeOK;
+ BOOL passed=ok && maximum<=3 && displayOK && decodeOK && metadataOK;
  NSURL*crop=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".dng"]]];
  engine.requestedPreviewRegion=CGRectMake(.7,.1,.2,.2);
  BOOL previewOK=[engine process:src destination:crop strength:1 raw:NO preview:YES center:CGPointZero progress:^(double v){} error:nil]!=nil;
@@ -82,7 +91,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  NSData*preparedData=[NSData dataWithContentsOfURL:prepared];if(preparedData.length!=12+(size_t)w*h*6)bands=NO;
  if(bands){const uint16_t*p=(const uint16_t*)((const uint8_t*)preparedData.bytes+12);for(size_t i=0;i<(size_t)w*h;i++)for(int c=0;c<3;c++)if(std::abs((int)p[i*3+c]-(int)expected[i*4+c])>1)bands=NO;}
  CGColorSpaceRelease(cs);[[NSFileManager defaultManager] removeItemAtURL:tiff error:nil];[[NSFileManager defaultManager] removeItemAtURL:prepared error:nil];passed=passed&&bands;
- [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d display=%d decode=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands,displayOK,decodeOK];
+ [[NSFileManager defaultManager] removeItemAtURL:src error:nil];[[NSFileManager defaultManager] removeItemAtURL:dst error:nil];return [NSString stringWithFormat:@"%@: IO=%d max=%d flipped=%d first=%d expected=%d preview=%d cancel=%d bands=%d display=%d decode=%d metadata=%d",passed?@"PASS":@"FAIL",ok,maximum,flippedMaximum,first,pixels[0],previewOK,cancelOK,bands,displayOK,decodeOK,metadataOK];
 }
  + (BOOL)prepareImageBuffer:(NSURL*)source destination:(NSURL*)destination linear:(BOOL)linear error:(NSError**)error {
  CIImage*ci=[CIImage imageWithContentsOfURL:source options:@{kCIImageApplyOrientationProperty:@YES}];if(!ci){if(error)*error=failure(@"无法读取输入图像，未能建立解码缓存。");return NO;}

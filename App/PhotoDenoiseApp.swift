@@ -304,6 +304,14 @@ import ImageIO
             do {
                 try await PHPhotoLibrary.shared().performChanges {
                     let request=PHAssetCreationRequest.forAsset()
+                    if let imageSource=CGImageSourceCreateWithURL(result as CFURL,nil),
+                       let properties=CGImageSourceCopyPropertiesAtIndex(imageSource,0,nil) as? [String:Any],
+                       let exif=properties[kCGImagePropertyExifDictionary as String] as? [String:Any],
+                       let dateText=exif[kCGImagePropertyExifDateTimeOriginal as String] as? String {
+                        let formatter=DateFormatter();formatter.locale=Locale(identifier:"en_US_POSIX");formatter.dateFormat="yyyy:MM:dd HH:mm:ss"
+                        if let offset=exif["OffsetTimeOriginal"] as? String {formatter.dateFormat="yyyy:MM:dd HH:mm:ssXXX";request.creationDate=formatter.date(from:dateText+offset)}
+                        else {request.creationDate=formatter.date(from:dateText)}
+                    }
                     request.addResource(with:.photo,fileURL:result,options:nil)
                 }
                 message="已存入相册"
