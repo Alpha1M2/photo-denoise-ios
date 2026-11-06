@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import Photos
 import UniformTypeIdentifiers
 import CoreImage
 import ImageIO
@@ -115,6 +116,20 @@ import ImageIO
             } catch { Task { @MainActor in self.busy=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false } }
         }
     }
+    func saveToPhotos() {
+        guard let result,!busy else{return}
+        Task {
+            let status=await PHPhotoLibrary.requestAuthorization(for:.addOnly)
+            guard status == .authorized || status == .limited else{message="请允许添加照片";return}
+            do {
+                try await PHPhotoLibrary.shared().performChanges {
+                    let request=PHAssetCreationRequest.forAsset()
+                    request.addResource(with:.photo,fileURL:result,options:nil)
+                }
+                message="已存入相册"
+            }catch{message="相册导入失败："+error.localizedDescription}
+        }
+    }
     func correctedJPEG() {
         guard let source,!busy,correctionAvailable else{return}
         engine.cancelled=false;busy=true;progress=0;message="正在校正显影，再进行 JPEG/RGB AI 降噪…"
@@ -152,7 +167,7 @@ struct StudioView: View {
                     Spacer()
                     if model.source != nil { Text(model.isRaw ? "RAW" : "JPEG").font(.caption.monospaced()).foregroundStyle(.secondary) }
                     Button { about=true } label:{Image(systemName:"info.circle")}.accessibilityLabel("关于")
-                    Button {share=true} label:{Image(systemName:"square.and.arrow.up")}.disabled(model.result==nil).accessibilityLabel("导出")
+                    Menu { Button("存入相册") {model.saveToPhotos()};Button("导出到文件 / App") {share=true} } label:{Image(systemName:"square.and.arrow.up")}.disabled(model.result==nil).accessibilityLabel("导出")
                 }.padding(.horizontal,20).frame(height:48)
                 ZStack {
                     Color.black

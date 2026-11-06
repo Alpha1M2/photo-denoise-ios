@@ -23,6 +23,7 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: 净影
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: 将处理后的 DNG 或 JPEG 存入相册
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
