@@ -138,6 +138,9 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  BOOL localLinear=self.useLocalLinearModel && !raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"] && [DenoiseEngine hasLocalLinearModel];
  NSString*model=[[NSBundle mainBundle] pathForResource:localLinear?@"local-linear":(raw?@"raw":@"rgb") ofType:@"onnx"];
  if(!model){if(error)*error=failure(@"安装包缺少 AI 模型。");return nil;}
+ NSString*baselineModel=model;
+ NSString*fastModel=localLinear&&self.accelerate&&ORTIsCoreMLExecutionProviderAvailable()?[[NSBundle mainBundle] pathForResource:@"local-linear-fast" ofType:@"onnx"]:nil;
+ if(fastModel)model=fastModel;
  NSString*sessionKey=[NSString stringWithFormat:@"%@|%d",model,self.accelerate];
  ORTSession*session=[self.cachedSessionKey isEqualToString:sessionKey]?self.cachedSession:nil;
  if(!session){
@@ -147,11 +150,13 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  self.backendName=@"CPU";
  if(self.accelerate){
    NSError*providerError=nil;
-   if([opts appendCoreMLExecutionProviderWithOptionsV2:@{@"MLComputeUnits":@"CPUAndNeuralEngine",@"ModelFormat":@"MLProgram",@"RequireStaticInputShapes":@"1"} error:&providerError])self.backendName=@"Core ML · 自动调度";
+   NSString*cache=[NSSearchPathForDirectoriesInDomains(NSCachesDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"CoreML"];
+   if([opts appendCoreMLExecutionProviderWithOptionsV2:@{@"MLComputeUnits":@"CPUAndNeuralEngine",@"ModelFormat":@"MLProgram",@"RequireStaticInputShapes":@"1",@"ModelCacheDirectory":cache} error:&providerError])self.backendName=fastModel?@"Core ML · FP16 · 自动调度":@"Core ML · 自动调度";
+   else model=baselineModel;
  }
  NSError*sessionError=nil;
  session=[[ORTSession alloc] initWithEnv:env modelPath:model sessionOptions:opts error:&sessionError];
- if(!session&&self.accelerate){opts=[[ORTSessionOptions alloc] initWithError:error];[opts setIntraOpNumThreads:2 error:nil];session=[[ORTSession alloc] initWithEnv:env modelPath:model sessionOptions:opts error:&sessionError];self.backendName=@"CPU · 加速不可用";}
+ if(!session&&self.accelerate){opts=[[ORTSessionOptions alloc] initWithError:error];[opts setIntraOpNumThreads:2 error:nil];session=[[ORTSession alloc] initWithEnv:env modelPath:baselineModel sessionOptions:opts error:&sessionError];self.backendName=@"CPU · 加速不可用";}
  if(!session){if(error)*error=sessionError;return nil;}
  self.cachedSession=session;self.cachedEnvironment=env;self.cachedSessionKey=sessionKey;
  }

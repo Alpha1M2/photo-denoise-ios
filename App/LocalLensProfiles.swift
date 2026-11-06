@@ -134,8 +134,10 @@ enum LocalLensProfiles {
             let m=mapping(parameters(profile,meta)!,meta,profile,image.extent.size),z=cropScale(m,image.extent.size)
             let point=CGPoint(x:40.5,y:50.5),q=m.point(CGPoint(x:150+(point.x-150)*z,y:100+(point.y-100)*z))
             var actual=[Float](repeating:0,count:4)
-            actual.withUnsafeMutableBytes{CIContext().render(output,toBitmap:$0.baseAddress!,rowBytes:16,bounds:CGRect(x:40,y:50,width:1,height:1),format:.RGBAf,colorSpace:space)}
-            let delta=max(abs(Double(actual[0])-(q.x-0.5)/300),abs(Double(actual[1])-(q.y-0.5)/200))
+            var expected=[Float](repeating:0,count:4);let context=CIContext()
+            actual.withUnsafeMutableBytes{context.render(output,toBitmap:$0.baseAddress!,rowBytes:16,bounds:CGRect(x:40,y:50,width:1,height:1),format:.RGBAf,colorSpace:space)}
+            expected.withUnsafeMutableBytes{context.render(image,toBitmap:$0.baseAddress!,rowBytes:16,bounds:CGRect(x:q.x-0.5,y:q.y-0.5,width:1,height:1),format:.RGBAf,colorSpace:space)}
+            let delta=max(abs(Double(actual[0]-expected[0])),abs(Double(actual[1]-expected[1])))
             return delta<0.02 && actual[3]>0.99 ? "PASS: LCP remap delta=\(delta)" : "FAIL: LCP remap delta=\(delta) rgba=\(actual)"
         } catch{return "FAIL: \(error.localizedDescription)"}
     }
