@@ -42,7 +42,7 @@ struct RenderEstimate {
             let registered=BGTaskScheduler.shared.register(forTaskWithIdentifier:id,using:nil) { [weak self] task in
                 Task{@MainActor in
                     guard let self,self.identifier==id else{task.setTaskCompleted(success:false);return}
-                    self.task=task;task.expirationHandler={Task{@MainActor in self.cancelWork?()}}
+                    self.task=task;task.expirationHandler={Task{@MainActor in self.expire()}}
                     if let continued=task as? BGContinuedProcessingTask {continued.progress.totalUnitCount=1000}
                     let launch=self.launchWork;self.launchWork=nil;launch?()
                 }
@@ -55,9 +55,14 @@ struct RenderEstimate {
             }
         }
         assertion=UIApplication.shared.beginBackgroundTask(withName:"净影渲染") { [weak self] in
-            Task{@MainActor in self?.cancelWork?()}
+            Task{@MainActor in self?.expire()}
         }
         work();return "后台额度有限 · 建议保持前台"
+    }
+    private func expire() {
+        let cancel=cancelWork
+        finish(success:false,notify:false)
+        cancel?()
     }
     func update(_ fraction:Double,subtitle:String) {
         if #available(iOS 26.0,*),let task=task as? BGContinuedProcessingTask {

@@ -52,10 +52,22 @@ import ImageIO
                 var mode="",starts=0,sawBackground=false
                 mode=RenderLifetime.shared.start(smoke:false,work:{
                     starts+=1
-                    Task{@MainActor in
-                        for i in 1...14 {try? await Task.sleep(nanoseconds:500_000_000);sawBackground = sawBackground || UIApplication.shared.applicationState == .background;RenderLifetime.shared.update(Double(i)/15,subtitle:"验证后台运行")}
-                        RenderLifetime.shared.finish(success:true,notify:false)
-                        self.reportSmoke(starts==1 && sawBackground,"\(mode); background=\(sawBackground); starts=\(starts)")
+                    DispatchQueue.global(qos:.userInitiated).async {
+                        let end=Date().addingTimeInterval(8)
+                        var nextProbe=Date()
+                        var checksum:UInt64=1
+                        while Date()<end {
+                            for _ in 0..<100_000 {checksum=checksum &* 6364136223846793005 &+ 1}
+                            if Date()>=nextProbe {
+                                nextProbe=Date().addingTimeInterval(0.25)
+                                DispatchQueue.main.async {sawBackground = sawBackground || UIApplication.shared.applicationState == .background}
+                            }
+                        }
+                        let value=checksum
+                        Task{@MainActor in
+                            RenderLifetime.shared.finish(success:true,notify:false)
+                            self.reportSmoke(starts==1 && sawBackground,"\(mode); background=\(sawBackground); starts=\(starts); checksum=\(value)")
+                        }
                     }
                 },cancel:{self.reportSmoke(false,"Background test expired")})
                 return
