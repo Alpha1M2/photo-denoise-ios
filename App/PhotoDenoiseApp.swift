@@ -58,7 +58,7 @@ import ImageIO
     }
     func run(preview: Bool) {
         guard let source, !busy else { return }
-        busy = true; progress = 0; result = nil; after = nil; previewMode = preview
+        engine.cancelled=false;busy = true; progress = 0; result = nil; after = nil; previewMode = preview
         message = preview ? "正在试算 1024 像素局部…" : "正在逐块处理全尺寸，请保持 App 在前台。"
         let raw = isRaw, amount = Float(strength), center = CGPoint(x:centerX,y:centerY)
         let target = folder.appendingPathComponent("\(preview ? "preview" : "denoised")-\(UUID().uuidString).\(raw ? "dng" : "jpg")")
@@ -67,6 +67,14 @@ import ImageIO
         DispatchQueue.global(qos: .userInitiated).async {
             let start = Date()
             do {
+                if preview {
+                    let reference=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".\(raw ? "dng" : "jpg")")
+                    let referenceURL=try engine.process(source,destination:reference,strength:0,raw:raw,preview:true,center:center,progress:{_ in})
+                    let originalPatch=Self.thumbnail(referenceURL)
+                    try? FileManager.default.removeItem(at:reference)
+                    Task{@MainActor in self.before=originalPatch}
+                    if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
+                } else {let full=Self.thumbnail(source);Task{@MainActor in self.before=full}}
                 let output = try engine.process(source, destination: target, strength: amount, raw: raw, preview: preview, center: center, progress: { value in
                     Task { @MainActor in self.progress = value }
                 })
@@ -81,7 +89,7 @@ import ImageIO
     }
     func correctedJPEG() {
         guard let source,!busy,correctionAvailable else{return}
-        busy=true;progress=0;message="正在校正显影，再进行 JPEG/RGB AI 降噪…"
+        engine.cancelled=false;busy=true;progress=0;message="正在校正显影，再进行 JPEG/RGB AI 降噪…"
         let temp=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".tiff")
         let target=folder.appendingPathComponent("corrected-\(UUID().uuidString).jpg")
         let engine=self.engine,amount=Float(strength)
@@ -90,6 +98,7 @@ import ImageIO
             defer {try? FileManager.default.removeItem(at:temp)}
             do {
                 try LensRenderer.renderCorrected(source,to:temp)
+                if engine.cancelled {throw LensRenderer.error("已取消；原片未修改。")}
                 let output=try engine.process(temp,destination:target,strength:amount,raw:false,preview:false,center:CGPoint(x:0.5,y:0.5),progress:{value in Task{@MainActor in self.progress=value}})
                 let image=Self.thumbnail(output)
                 Task{@MainActor in self.after=image;self.result=output;self.previewMode=false;self.busy=false;self.message="校正并降噪完成。这是显影后的 JPEG，原 RAW 保留。";UIApplication.shared.isIdleTimerDisabled=false}
@@ -109,10 +118,10 @@ struct StudioView: View {
             ScrollView {
                 VStack(alignment:.leading,spacing:20) {
                     HStack { VStack(alignment:.leading,spacing:5) { Text("保留夜色，也保留细节").font(.title2.bold()); Text("RAW · JPEG / 本机离线 AI").font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName:"moon.stars.fill").font(.largeTitle).foregroundStyle(.mint) }
-                    HStack { Button { showFiles=true } label: { Label("文件导入",systemImage:"folder") }; PhotosPicker(selection:$photo,matching:.images) { Label("相册导入",systemImage:"photo") } }.buttonStyle(.bordered).disabled(model.busy)
+                    HStack { Button { showFiles=true } label: { Label("文件导入",systemImage:"folder") }; PhotosPicker(selection:$photo,matching:.images,preferredItemEncoding:.current) { Label("相册导入",systemImage:"photo") } }.buttonStyle(.bordered).disabled(model.busy)
                     if let image = compare ? model.before : (model.after ?? model.before) {
                         ZoomImage(image:image).frame(height:320).clipShape(RoundedRectangle(cornerRadius:18))
-                        Text("双指缩放检查细节。\(model.previewMode ? "试算结果为所选局部；原片按钮显示整图参考。" : "")").font(.caption).foregroundStyle(.secondary)
+                        Text("双指缩放检查细节。\(model.previewMode ? "试算前后为同一局部、同一显影方式。" : "")").font(.caption).foregroundStyle(.secondary)
                         Toggle("查看原片参考",isOn:$compare)
                     } else { RoundedRectangle(cornerRadius:18).fill(.white.opacity(0.04)).frame(height:250).overlay { ContentUnavailableView("导入一张夜景照片",systemImage:"photo.badge.plus",description:Text("Sony ARW / DNG / JPEG")) } }
                     VStack(alignment:.leading,spacing:10) {
@@ -143,7 +152,7 @@ struct StudioView: View {
             }.navigationTitle("净影").background(Color(red:0.035,green:0.055,blue:0.075)).tint(.mint)
         }
         .fileImporter(isPresented:$showFiles,allowedContentTypes:[.image,.data],allowsMultipleSelection:false) { result in if case .success(let urls)=result,let url=urls.first {model.load(url)} }
-        .onChange(of:photo) { _, item in Task { if let data = try? await item?.loadTransferable(type:Data.self) { let url=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+".jpg");do {try data.write(to:url);model.load(url)}catch {model.message=error.localizedDescription} } } }
+        .onChange(of:photo) { _, item in Task { if let data = try? await item?.loadTransferable(type:Data.self) { let ext=item?.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg";let url=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+"."+ext);do {try data.write(to:url);model.load(url);try? FileManager.default.removeItem(at:url)}catch {model.message=error.localizedDescription} } } }
         .sheet(isPresented:$share) { if let url=model.result { ShareSheet(url:url) } }
     }
 }

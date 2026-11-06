@@ -12,7 +12,7 @@ static int mirror(int n,int size){if(size<=1)return 0;while(n<0||n>=size){if(n<0
 static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<n;i+=core)r.push_back(i);return r;}
 @implementation DenoiseEngine
 - (NSURL*)process:(NSURL*)source destination:(NSURL*)destination strength:(float)strength raw:(BOOL)raw preview:(BOOL)preview center:(CGPoint)center progress:(void(^)(double))progress error:(NSError**)error {
- self.cancelled=NO;strength=std::clamp(strength,0.f,1.f);
+ strength=std::clamp(strength,0.f,1.f);
  if([[NSFileManager defaultManager] fileExistsAtPath:destination.path]){if(error)*error=failure(@"输出文件已存在，请使用新文件名。");return nil;}
  NSString*model=[[NSBundle mainBundle] pathForResource:raw?@"raw":@"rgb" ofType:@"onnx"];
  if(!model){if(error)*error=failure(@"安装包缺少 AI 模型。");return nil;}
@@ -29,10 +29,13 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(raw){
    reader=std::make_unique<LibRaw>();int rc=reader->open_file(source.fileSystemRepresentation);if(!rc)rc=reader->unpack();
    if(rc || !reader->imgdata.rawdata.raw_image || reader->imgdata.idata.filters==9 || reader->imgdata.idata.filters==0){CGColorSpaceRelease(color);if(error)*error=failure(@"此 RAW 格式尚不支持，或解码失败。请保留原片。");return nil;}
-   auto&s=reader->imgdata.sizes;cx=s.left_margin;cy=s.top_margin;bool found=false;
+   auto&s=reader->imgdata.sizes;cx=s.left_margin;cy=s.top_margin;
+   int visibleW=s.width,visibleH=s.height;auto crop=s.raw_inset_crops[0];
+   if(crop.cwidth>0 && crop.cheight>0 && crop.cleft+crop.cwidth<=s.raw_width && crop.ctop+crop.cheight<=s.raw_height){cx=crop.cleft;cy=crop.ctop;visibleW=crop.cwidth;visibleH=crop.cheight;}
+   int baseX=cx,baseY=cy;bool found=false;
    for(int y=0;y<2;y++)for(int x=0;x<2;x++)if(reader->COLOR(cy+y,cx+x)==0){cx+=x;cy+=y;found=true;goto origin;}
    origin: if(!found){CGColorSpaceRelease(color);if(error)*error=failure(@"无法识别 Bayer 排列。");return nil;}
-   width=(s.width-(cx-s.left_margin))&~1;height=(s.height-(cy-s.top_margin))&~1;
+   width=(visibleW-(cx-baseX))&~1;height=(visibleH-(cy-baseY))&~1;
    auto&c=reader->imgdata.color;double green=c.pre_mul[1];
    if(green<=0)green=1;wb[0]=c.pre_mul[0]/green;wb[1]=wb[2]=1;wb[3]=c.pre_mul[2]/green;
    for(int i=0;i<4;i++){int fc=reader->COLOR(cy+i/2,cx+i%2);blacks[i]=c.black+c.cblack[fc];ranges[i]=std::max(1.,(double)c.maximum-blacks[i]);if(wb[i]<=0)wb[i]=1;}
@@ -64,6 +67,12 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
        else v=original[((size_t)sy*width+sx)*4+c]/255.f;
        input[((size_t)c*tile+y)*tile+x]=v;sum+=v;
      }
+   }
+   if(strength==0){
+     if(raw)for(int y=0;y<std::min(core,H-ty);y++)for(int x=0;x<std::min(core,W-tx);x++)for(int p=0;p<4;p++){
+       double v=input[((size_t)p*tile+y+pad)*tile+x+pad]/wb[p];output[((size_t)(ty+y)*2+p/2)*width+(tx+x)*2+p%2]=(uint16_t)std::llround(std::clamp(v,0.,1.)*65535);
+     }
+     progress((double)++done/total);continue;
    }
    ORTValue*value=[[ORTValue alloc] initWithTensorData:data elementType:ORTTensorElementDataTypeFloat shape:@[@1,@(channels),@(tile),@(tile)] error:error];if(!value){CGColorSpaceRelease(color);return nil;}
    NSDictionary*values=[session runWithInputs:@{inName:value} outputNames:[NSSet setWithObject:outName] runOptions:nil error:error];if(!values){CGColorSpaceRelease(color);return nil;}

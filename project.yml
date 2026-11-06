@@ -16,7 +16,8 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: App/Bridge.h
         HEADER_SEARCH_PATHS: '$(inherited) $(SRCROOT)/Vendor/LibRaw'
         LIBRARY_SEARCH_PATHS: '$(inherited) $(SRCROOT)/Vendor/lib'
-        OTHER_LDFLAGS: '$(inherited) -lraw -lc++'
+        OTHER_LDFLAGS: '$(inherited) -lraw -lc++ -lz'
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGNING_ALLOWED: NO
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: 净影
