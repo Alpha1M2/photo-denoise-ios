@@ -128,7 +128,11 @@ enum LocalLensProfiles {
         guard let g=parameters(profile,meta,channel:"green"),let r=parameters(profile,meta,channel:"red"),let b=parameters(profile,meta,channel:"blue"),let caKernel else{throw LensRenderer.error("没有可用的色差校正参数")}
         let size=image.extent.size,gm=mapping(g,meta,profile,size),rm=mapping(r,meta,profile,size),bm=mapping(b,meta,profile,size)
         func pair(_ m:Mapping)->[Any] {[CIVector(cgPoint:m.center),CIVector(x:m.focal.width,y:m.focal.height)]}
-        let args:[Any]=[image]+pair(gm)+pair(rm)+[CIVector(x:rm.k[0],y:rm.k[1],z:rm.k[2]),r["ScaleFactor"] ?? 1]+pair(bm)+[CIVector(x:bm.k[0],y:bm.k[1],z:bm.k[2]),b["ScaleFactor"] ?? 1]
+        var args:[Any]=[image]
+        args.append(contentsOf:pair(gm));args.append(contentsOf:pair(rm))
+        args.append(CIVector(x:rm.k[0],y:rm.k[1],z:rm.k[2]));args.append(r["ScaleFactor"] ?? 1)
+        args.append(contentsOf:pair(bm))
+        args.append(CIVector(x:bm.k[0],y:bm.k[1],z:bm.k[2]));args.append(b["ScaleFactor"] ?? 1)
         guard let out=caKernel.apply(extent:image.extent,roiCallback:{_,_ in image.extent},arguments:args) else{throw LensRenderer.error("色差校正失败")};return out
     }
     static func apply(_ image:CIImage,meta:LensRenderer.Metadata,profile:Profile,options:LensRenderer.Options=LensRenderer.Options(distortion:true,vignetting:true,chromatic:false))throws->CIImage {
