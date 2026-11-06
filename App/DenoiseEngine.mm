@@ -41,8 +41,10 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
 + (UIImage*)linearBufferPreview:(NSURL*)url {
  NSData*data=[NSData dataWithContentsOfURL:url];if(data.length<12)return nil;uint32_t header[3];memcpy(header,data.bytes,12);
  if(header[0]!=0x314c594a||data.length!=12+(size_t)header[1]*header[2]*6)return nil;
- NSData*pixels=[data subdataWithRange:NSMakeRange(12,data.length-12)];CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceLinearSRGB);
- CGImageRef cg=CGImageCreate(header[1],header[2],16,48,header[1]*6,cs,kCGImageAlphaNone|kCGBitmapByteOrder16Little,provider,NULL,false,kCGRenderingIntentDefault);
+ size_t count=(size_t)header[1]*header[2];NSMutableData*pixels=[NSMutableData dataWithLength:count*4];const uint16_t*src=(const uint16_t*)((const uint8_t*)data.bytes+12);uint8_t*dst=(uint8_t*)pixels.mutableBytes;
+ for(size_t i=0;i<count;i++){for(int c=0;c<3;c++){double v=src[i*3+c]/65535.;v=v<=.0031308?12.92*v:1.055*std::pow(v,1./2.4)-.055;dst[i*4+c]=(uint8_t)std::lround(std::clamp(v,0.,1.)*255);}dst[i*4+3]=255;}
+ CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);CGColorSpaceRef cs=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+ CGImageRef cg=CGImageCreate(header[1],header[2],8,32,header[1]*4,cs,kCGImageAlphaNoneSkipLast,provider,NULL,false,kCGRenderingIntentDefault);
  UIImage*image=cg?[UIImage imageWithCGImage:cg]:nil;if(cg)CGImageRelease(cg);CGColorSpaceRelease(cs);CGDataProviderRelease(provider);return image;
 }
 + (UIImage*)rawPreview:(NSURL*)url {

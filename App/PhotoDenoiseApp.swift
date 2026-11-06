@@ -177,7 +177,7 @@ import ImageIO
                 let image=Self.linearThumbnail(output)
                 Task{@MainActor in guard !engine.cancelled else{try? FileManager.default.removeItem(at:output);self.busy=false;self.cancelling=false;self.message="已取消";UIApplication.shared.isIdleTimerDisabled=false;return};self.before=reference;self.after=image;self.result=output;self.busy=false;self.cancelling=false;self.message="线性 DNG 已就绪";if self.smoke {
                     let apple=CIRAWFilter(imageURL:output)?.outputImage
-                    self.reportSmoke(apple != nil && image != nil && reference != nil,apple == nil ? "Apple RAW decoder rejected linear DNG" : self.message)
+                    self.reportSmoke(apple != nil && image != nil && reference != nil,"Apple=\(apple != nil) output=\(image != nil) reference=\(reference != nil)")
                 };UIApplication.shared.isIdleTimerDisabled=false}
             }catch {Task{@MainActor in self.busy=false;self.cancelling=false;self.message=error.localizedDescription;self.reportSmoke(false,error.localizedDescription);UIApplication.shared.isIdleTimerDisabled=false}}
         }

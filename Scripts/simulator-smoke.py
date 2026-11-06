@@ -22,5 +22,8 @@ for mode in ['linear','cancel','zoom','rgb','raw','lens']:
     report=json.loads(status.read_text());(out/(mode+'.json')).write_text(json.dumps(report,ensure_ascii=False))
     time.sleep(2)
     run('xcrun','simctl','io',udid,'screenshot',str(out/(mode+'.png')))
+    if not report['ok']:
+        log=subprocess.run(['xcrun','simctl','spawn',udid,'log','show','--last','3m','--predicate','process == "PhotoDenoise"'],capture_output=True,text=True)
+        (out/(mode+'-failure.log')).write_text(log.stdout+log.stderr)
     assert report['ok'],report
 print('Simulator inference passed for RAW and JPEG on',d['name'])
