@@ -9,4 +9,4 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - run: clang++ -std=c++17 -fobjc-arc -framework Foundation -framework ImageIO Scripts/test-dng-metadata.mm -o /tmp/test-dng && /tmp/test-dng
+      - run: clang++ -std=c++17 -fobjc-arc -framework Foundation -framework ImageIO -framework CoreGraphics Scripts/test-dng-metadata.mm -o /tmp/test-dng && /tmp/test-dng
