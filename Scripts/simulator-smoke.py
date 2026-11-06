@@ -1,7 +1,7 @@
-import subprocess,json,time,pathlib
+import subprocess,json,time,pathlib,re
 def run(*args):return subprocess.check_output(args,text=True).strip()
 devices=json.loads(run('xcrun','simctl','list','devices','available','--json'))['devices']
-phones=[d for group in devices.values() for d in group if 'iPhone' in d['name']]
+phones=[d for key in sorted(devices,key=lambda k:tuple(map(int,re.findall(r'\d+',k))),reverse=True) for d in devices[key] if 'iPhone' in d['name']]
 d=next((d for d in phones if 'Pro Max' in d['name']),phones[0]);udid=d['udid']
 subprocess.run(['xcrun','simctl','boot',udid],check=False)
 subprocess.run(['xcrun','simctl','bootstatus',udid,'-b'],check=True)
@@ -9,10 +9,13 @@ run('xcrun','simctl','install',udid,'build-sim/Build/Products/Release-iphonesimu
 out=pathlib.Path('smoke-output');out.mkdir(exist_ok=True)
 container=pathlib.Path(run('xcrun','simctl','get_app_container',udid,'io.alpha1m2.photodenoise','data'))
 status=container/'Documents/smoke-status.json'
-for mode in ['linear','cancel','zoom','preview','rgb','raw','lens']:
+for mode in ['linear','cancel','zoom','preview','rgb','raw','lens','background']:
     subprocess.run(['xcrun','simctl','terminate',udid,'io.alpha1m2.photodenoise'],check=False)
     status.unlink(missing_ok=True)
     run('xcrun','simctl','launch',udid,'io.alpha1m2.photodenoise','--smoke-'+mode)
+    if mode=='background':
+        time.sleep(2)
+        run('xcrun','simctl','launch',udid,'com.apple.mobilesafari')
     deadline=time.time()+240
     while not status.exists() and time.time()<deadline:time.sleep(2)
     if not status.exists():

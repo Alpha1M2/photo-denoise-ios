@@ -108,6 +108,7 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(self.cancelled){if(error)*error=failure(@"已取消");return nil;}
  strength=std::clamp(strength,0.f,1.f);
  if([[NSFileManager defaultManager] fileExistsAtPath:destination.path]){if(error)*error=failure(@"输出文件已存在，请使用新文件名。");return nil;}
+ NSURL*staging=[destination URLByAppendingPathExtension:@"partial"];
  BOOL localLinear=self.useLocalLinearModel && !raw && [destination.pathExtension.lowercaseString isEqualToString:@"dng"] && [DenoiseEngine hasLocalLinearModel];
  NSString*model=[[NSBundle mainBundle] pathForResource:localLinear?@"local-linear":(raw?@"raw":@"rgb") ofType:@"onnx"];
  if(!model){if(error)*error=failure(@"安装包缺少 AI 模型。");return nil;}
@@ -212,18 +213,20 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  if(raw){auto&c=reader->imgdata.color;double matrix[9],neutral[3];for(int i=0;i<9;i++)matrix[i]=c.cam_xyz[i/3][i%3];double g=c.cam_mul[1]>0?c.cam_mul[1]:1;for(int i=0;i<3;i++)neutral[i]=c.cam_mul[i]>0?g/c.cam_mul[i]:1;
    int flip=reader->imgdata.sizes.flip,orientation=flip==3?3:(flip==5?8:(flip==6?6:1));
    dng::Metadata meta;meta.lens=reader->imgdata.lens.Lens;meta.focal=reader->imgdata.other.focal_len;meta.aperture=reader->imgdata.other.aperture;meta.exposure=reader->imgdata.other.shutter;meta.iso=reader->imgdata.other.iso_speed;
-   ok=dng::write(destination.fileSystemRepresentation,output,width,height,reader->imgdata.idata.make,reader->imgdata.idata.model,matrix,neutral,orientation,meta);
- }else if(linear){double matrix[9]={3.2404542,-1.5371385,-0.4985314,-0.9692660,1.8760108,0.0415560,0.0556434,-0.2040259,1.0572252},neutral[3]={1,1,1};ok=dng::write(destination.fileSystemRepresentation,output,width,height,"JingYing","Linear sRGB",matrix,neutral,1,dng::Metadata(),true);
+   ok=dng::write(staging.fileSystemRepresentation,output,width,height,reader->imgdata.idata.make,reader->imgdata.idata.model,matrix,neutral,orientation,meta);
+ }else if(linear){double matrix[9]={3.2404542,-1.5371385,-0.4985314,-0.9692660,1.8760108,0.0415560,0.0556434,-0.2040259,1.0572252},neutral[3]={1,1,1};ok=dng::write(staging.fileSystemRepresentation,output,width,height,"JingYing","Linear sRGB",matrix,neutral,1,dng::Metadata(),true);
  }else{
    CGContextRef bitmap=CGBitmapContextCreate(rgba.data(),width,height,8,width*4,color,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrderDefault);CGImageRef im=bitmap?CGBitmapContextCreateImage(bitmap):nil;
    if(im){
      NSMutableDictionary*properties=[NSMutableDictionary dictionaryWithDictionary:@{(__bridge NSString*)kCGImageDestinationLossyCompressionQuality:@0.97,(__bridge NSString*)kCGImagePropertyOrientation:@1}];
      CGImageSourceRef inputSource=CGImageSourceCreateWithURL((__bridge CFURLRef)source,nil);
      if(inputSource){NSDictionary*sourceProperties=CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(inputSource,0,nil));NSMutableDictionary*exif=[sourceProperties[(__bridge NSString*)kCGImagePropertyExifDictionary] mutableCopy];if(exif){exif[(__bridge NSString*)kCGImagePropertyExifPixelXDimension]=@(width);exif[(__bridge NSString*)kCGImagePropertyExifPixelYDimension]=@(height);properties[(__bridge NSString*)kCGImagePropertyExifDictionary]=exif;}CFRelease(inputSource);}
-     CGImageDestinationRef dst=CGImageDestinationCreateWithURL((__bridge CFURLRef)destination,(__bridge CFStringRef)UTTypeJPEG.identifier,1,nil);
+     CGImageDestinationRef dst=CGImageDestinationCreateWithURL((__bridge CFURLRef)staging,(__bridge CFStringRef)UTTypeJPEG.identifier,1,nil);
      if(dst){CGImageDestinationAddImage(dst,im,(__bridge CFDictionaryRef)properties);ok=CGImageDestinationFinalize(dst);CFRelease(dst);}CGImageRelease(im);
    }if(bitmap)CGContextRelease(bitmap);
  }
- CGColorSpaceRelease(color);if(!ok){[[NSFileManager defaultManager] removeItemAtURL:destination error:nil];if(error)*error=failure(@"写入失败，请检查存储空间。");return nil;}return destination;
+ CGColorSpaceRelease(color);
+ if(!ok||self.cancelled){[[NSFileManager defaultManager] removeItemAtURL:staging error:nil];if(error)*error=failure(self.cancelled?@"已取消":@"写入失败，请检查存储空间。");return nil;}
+ if(![[NSFileManager defaultManager] moveItemAtURL:staging toURL:destination error:error]){[[NSFileManager defaultManager] removeItemAtURL:staging error:nil];return nil;}return destination;
 }
 @end

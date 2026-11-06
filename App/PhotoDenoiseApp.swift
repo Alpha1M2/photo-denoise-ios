@@ -30,6 +30,7 @@ import ImageIO
     @Published var eta = ""
     @Published var backgroundStatus = ""
     var visibleRegion = CGRect(x:0,y:0,width:1,height:1)
+    var interruptedMessage:String?
     var preparing = false
     var cachedInput:URL?
     var cachedKey:String?
@@ -39,7 +40,7 @@ import ImageIO
     let engine = DenoiseEngine()
     var isRaw: Bool { ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
     let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-preview") || ProcessInfo.processInfo.arguments.contains("--smoke-linear") || ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
+    let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-background") || ProcessInfo.processInfo.arguments.contains("--smoke-preview") || ProcessInfo.processInfo.arguments.contains("--smoke-linear") || ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
     init() {
         if !smoke,let saved=UserDefaults.standard.string(forKey:"lastOutput"),FileManager.default.fileExists(atPath:saved) {
             result=URL(fileURLWithPath:saved)
@@ -47,6 +48,18 @@ import ImageIO
             message="上次处理结果";Task{@MainActor in self.refreshDisplay()}
         }
         if smoke { Task { @MainActor in
+            if ProcessInfo.processInfo.arguments.contains("--smoke-background") {
+                var mode="",starts=0,sawBackground=false
+                mode=RenderLifetime.shared.start(smoke:false,work:{
+                    starts+=1
+                    Task{@MainActor in
+                        for i in 1...14 {try? await Task.sleep(nanoseconds:500_000_000);sawBackground = sawBackground || UIApplication.shared.applicationState == .background;RenderLifetime.shared.update(Double(i)/15,subtitle:"验证后台运行")}
+                        RenderLifetime.shared.finish(success:true,notify:false)
+                        self.reportSmoke(starts==1 && sawBackground,"\(mode); background=\(sawBackground); starts=\(starts)")
+                    }
+                },cancel:{self.reportSmoke(false,"Background test expired")})
+                return
+            }
             if ProcessInfo.processInfo.arguments.contains("--smoke-linear") {
                 DispatchQueue.global().async {let detail=DenoiseEngine.testLinearFixture();Task{@MainActor in self.reportSmoke(detail.hasPrefix("PASS"),detail)}};return
             }
@@ -149,7 +162,7 @@ import ImageIO
         let reused=cachedKey==key ? cachedInput : nil
         let amount=Float(strength),region=visibleRegion,engine=self.engine
         let target=folder.appendingPathComponent("\(preview ? "preview" : "denoised")-\(UUID().uuidString).\(linear || rawSensor ? "dng" : "jpg")")
-        engine.cancelled=false;engine.useLocalLinearModel=localRaw;engine.requestedPreviewRegion=region
+        interruptedMessage=nil;engine.cancelled=false;engine.useLocalLinearModel=localRaw;engine.requestedPreviewRegion=region
         busy=true;cancelling=false;previewing=preview;preparing=true;progress=0;eta="";backgroundStatus="";message="准备图像 · 请保持前台"
         previewImage=nil;after=nil;result=nil
         UIApplication.shared.isIdleTimerDisabled=true
@@ -180,7 +193,7 @@ import ImageIO
                     if let ref {self.before=ref}
                     let work={self.execute(input:input,target:target,source:source,amount:amount,raw:rawSensor,linear:linear,preview:preview)}
                     if preview {self.message="正在预览…";work()}
-                    else {self.message="正在处理整图…";self.backgroundStatus=RenderLifetime.shared.start(smoke:self.smoke,work:work,cancel:{self.cancel()})}
+                    else {self.message="正在处理整图…";self.backgroundStatus=RenderLifetime.shared.start(smoke:self.smoke,work:work,cancel:{self.interruptedMessage="后台任务已结束，请在前台重试";self.cancel()})}
                 }
             } catch {
                 if created {try? FileManager.default.removeItem(at:prepared)}
@@ -233,7 +246,7 @@ import ImageIO
         }
     }
     func failed(_ error:Error) {
-        busy=false;cancelling=false;preparing=false;eta="";message=engine.cancelled ? "已取消" : error.localizedDescription
+        busy=false;cancelling=false;preparing=false;eta="";message=interruptedMessage ?? (engine.cancelled ? "已取消" : error.localizedDescription)
         UIApplication.shared.isIdleTimerDisabled=false
         if !previewing {RenderLifetime.shared.finish(success:false,notify:false)}
         reportSmoke(false,message)
