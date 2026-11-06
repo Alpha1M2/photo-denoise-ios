@@ -74,8 +74,9 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  auto xs=starts(W,core),ys=starts(H,core);int done=0,total=(int)(xs.size()*ys.size());
  // Keep an immutable RGB source to avoid tile-to-tile contamination while writing the destination.
  std::vector<uint8_t> original=rgba;
- for(int ty:ys)for(int tx:xs){@autoreleasepool {
+ for(int ty:ys)for(int tx:xs){
    if(self.cancelled){CGColorSpaceRelease(color);if(error)*error=failure(@"已取消；原片未修改。");return nil;}
+   @autoreleasepool {
    NSMutableData*data=[NSMutableData dataWithLength:(size_t)channels*tile*tile*sizeof(float)];float*input=(float*)data.mutableBytes;double sum=0;
    for(int y=0;y<tile;y++)for(int x=0;x<tile;x++){
      int sx=mirror(tx+x-pad,W),sy=mirror(ty+y-pad,H);
