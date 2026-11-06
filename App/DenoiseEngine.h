@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)prepareCIImage:(CIImage *)image destination:(NSURL *)destination linear:(BOOL)linear error:(NSError **)error;
 @property(atomic) BOOL useLocalLinearModel;
 + (BOOL)hasLocalLinearModel;
++ (nullable NSDictionary<NSString *, id> *)rawMetadata:(NSURL *)source;
 + (BOOL)renderLinearRaw:(NSURL *)source destination:(NSURL *)destination error:(NSError **)error;
 + (BOOL)writeSmokeRaw:(NSURL *)url;
 + (NSString *)testLinearFixture;

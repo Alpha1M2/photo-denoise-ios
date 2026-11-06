@@ -11,6 +11,11 @@ enum LensRenderer {
                 focal=(e[kCGImagePropertyExifFocalLength as String] as? NSNumber)?.doubleValue ?? 0
                 aperture=(e[kCGImagePropertyExifFNumber as String] as? NSNumber)?.doubleValue ?? 0
             }
+            if lens.isEmpty || focal<=0 || aperture<=0,let raw=DenoiseEngine.rawMetadata(url) {
+                if lens.isEmpty {lens=raw["lens"] as? String ?? ""}
+                if focal<=0 {focal=(raw["focal"] as? NSNumber)?.doubleValue ?? 0}
+                if aperture<=0 {aperture=(raw["aperture"] as? NSNumber)?.doubleValue ?? 0}
+            }
         }
         var matches24105:Bool { lens.uppercased().contains("FE 24-105MM") && lens.uppercased().contains("G OSS") && focal>=24 && focal<=105 }
     }

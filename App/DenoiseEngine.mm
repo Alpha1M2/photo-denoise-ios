@@ -65,6 +65,12 @@ static std::vector<int> starts(int n,int core){std::vector<int> r;for(int i=0;i<
  CGColorSpaceRelease(cs);BOOL ok=f.good();if(!ok&&error)*error=failure(@"无法写入图像缓存");return ok;
 }
 + (BOOL)hasLocalLinearModel {return [[NSBundle mainBundle] pathForResource:@"local-linear" ofType:@"onnx"] != nil;}
++ (NSDictionary<NSString*,id>*)rawMetadata:(NSURL*)source {
+ auto reader=std::make_unique<LibRaw>();if(reader->open_file(source.fileSystemRepresentation)!=LIBRAW_SUCCESS)return nil;
+ auto&d=reader->imgdata;
+ NSString*lens=[NSString stringWithUTF8String:d.lens.Lens] ?: @"";
+ return @{@"lens":lens,@"focal":@(d.other.focal_len),@"aperture":@(d.other.aperture)};
+}
 + (BOOL)renderLinearRaw:(NSURL*)source destination:(NSURL*)destination error:(NSError**)error {
  auto reader=std::make_unique<LibRaw>();auto&p=reader->imgdata.params;p.use_camera_wb=1;p.no_auto_bright=1;p.output_color=1;p.output_bps=16;p.gamm[0]=1;p.gamm[1]=1;
  int rc=reader->open_file(source.fileSystemRepresentation);if(!rc)rc=reader->unpack();if(!rc)rc=reader->dcraw_process();

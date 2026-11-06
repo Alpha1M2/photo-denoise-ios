@@ -38,7 +38,8 @@ import ImageIO
     var wholeSeconds:Double?
     var inferenceStarted:TimeInterval=0
     let engine = DenoiseEngine()
-    var isRaw: Bool { ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
+    var detectedRaw=false
+    var isRaw: Bool { detectedRaw || ["arw", "dng", "nef", "cr2", "cr3", "raf"].contains(source?.pathExtension.lowercased() ?? "") }
     let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-background") || ProcessInfo.processInfo.arguments.contains("--smoke-preview") || ProcessInfo.processInfo.arguments.contains("--smoke-linear") || ProcessInfo.processInfo.arguments.contains("--smoke-cancel") || ProcessInfo.processInfo.arguments.contains("--smoke-zoom") || ProcessInfo.processInfo.arguments.contains("--smoke-rgb") || ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-lens")
     init() {
@@ -76,7 +77,8 @@ import ImageIO
                 DispatchQueue.global().async {let detail=DenoiseEngine.testLinearFixture();Task{@MainActor in self.reportSmoke(detail.hasPrefix("PASS"),detail)}};return
             }
             let raw=ProcessInfo.processInfo.arguments.contains("--smoke-raw") || ProcessInfo.processInfo.arguments.contains("--smoke-preview")
-            let url=FileManager.default.temporaryDirectory.appendingPathComponent(raw ? "synthetic.dng" : "synthetic.jpg")
+            // Photos may supply a generic RAW suffix. Recognition must inspect bytes.
+            let url=FileManager.default.temporaryDirectory.appendingPathComponent(raw ? "synthetic.raw" : "synthetic.jpg")
             if raw { _=DenoiseEngine.writeSmokeRaw(url) }
             else {
                 let format=UIGraphicsImageRendererFormat();format.scale=1
@@ -111,6 +113,7 @@ import ImageIO
                 };return
             }
             load(url)
+            if raw && !isRaw {reportSmoke(false,"RAW content was misclassified by filename");return}
             if ProcessInfo.processInfo.arguments.contains("--smoke-preview") {visibleRegion=CGRect(x:0.6,y:0.1,width:0.25,height:0.25);run(preview:true);return}
             if ProcessInfo.processInfo.arguments.contains("--smoke-lens"){correction=true;correctedJPEG()}else{run()}
         } }
@@ -129,14 +132,18 @@ import ImageIO
             if let cachedInput {try? FileManager.default.removeItem(at:cachedInput)}
             cachedInput=nil;cachedKey=nil;previewImage=nil;previewRegion = .zero;wholeSeconds=nil;eta=""
             source = target; result = nil; after = nil
+            detectedRaw=DenoiseEngine.rawMetadata(target) != nil
+            lens="镜头型号未识别"
             before = Self.thumbnail(target)
             if let s = CGImageSourceCreateWithURL(target as CFURL, nil), let props = CGImageSourceCopyPropertiesAtIndex(s, 0, nil) as? [String: Any] {
                 let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any]
                 lens = exif?[kCGImagePropertyExifLensModel as String] as? String ?? "镜头型号未识别"
             }
-            if isRaw, let filter = CIRAWFilter(imageURL: target) {
+            let metadata=LensRenderer.Metadata(target)
+            if !metadata.lens.isEmpty {lens=metadata.lens}
+            if isRaw {
                 correctionAvailable = LensRenderer.supports(target)
-                lensStatus = filter.isLensCorrectionSupported ? "配置：系统镜头校正" : (correctionAvailable ? "配置：Lensfun · 畸变 / 暗角 / 色差 · 边缘裁切 4%" : "无可用校正配置")
+                lensStatus = CIRAWFilter(imageURL:target)?.isLensCorrectionSupported == true ? "配置：系统镜头校正" : (correctionAvailable ? "配置：Lensfun · 畸变 / 暗角 / 色差 · 边缘裁切 4%" : "此原片暂无可用校正配置")
             } else { correctionAvailable = LensRenderer.Metadata(target).matches24105; lensStatus = "JPEG 校正默认关闭 · 24–105 G 配置裁切 4%" }
             correction = isRaw && correctionAvailable
             message = "已导入 · \(url.lastPathComponent)"
@@ -373,7 +380,7 @@ struct StudioView: View {
         .fileImporter(isPresented:$showFiles,allowedContentTypes:[.image,.data],allowsMultipleSelection:false) { result in if case .success(let urls)=result,let url=urls.first {model.load(url)} }
         .onChange(of:photo) { _, item in Task { if let data = try? await item?.loadTransferable(type:Data.self) { let ext=item?.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg";let url=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+"."+ext);do {try data.write(to:url);model.load(url);try? FileManager.default.removeItem(at:url)}catch {model.message=error.localizedDescription} } } }
         .sheet(isPresented:$share) { if let url=model.result { ShareSheet(url:url) } }
-        .alert("净影 0.4",isPresented:$about) {
+        .alert("净影 0.4.1",isPresented:$about) {
             Button("完成",role:.cancel){}
         } message: {Text("离线 RAW / JPEG 降噪\nRawNIND · NIND · LibRaw\nCPU 推理 · GPL-3.0\n原片不会被覆盖")}
     }
