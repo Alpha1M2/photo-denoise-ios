@@ -6,6 +6,7 @@ enum LocalLensProfiles {
     struct Record:Decodable {
         let focal:Double, distance:Double, av:Double
         let distortion:[String:Double]?, fisheye:[String:Double]?, vignette:[String:Double]?
+        let red:[String:Double]?,green:[String:Double]?,blue:[String:Double]?
         let piecewise:[[Double]]?
     }
     struct Profile:Decodable {let name:String,camera:String;let raw:Bool;let crop:Double;let records:[Record]}
@@ -37,10 +38,14 @@ enum LocalLensProfiles {
         for i in 1..<v.count where x<=v[i] {return(v[i-1],v[i],(x-v[i-1])/(v[i]-v[i-1]))}
         return(last,last,0)
     }
-    static func parameters(_ profile:Profile,_ meta:LensRenderer.Metadata,vignette:Bool=false)->[String:Double]? {
-        let rows=profile.records.filter{vignette ? $0.vignette != nil : ($0.distortion != nil || $0.fisheye != nil)}
+    static func parameters(_ profile:Profile,_ meta:LensRenderer.Metadata,vignette:Bool=false,channel:String?=nil)->[String:Double]? {
+        func selected(_ r:Record)->[String:Double]? {
+            if let channel {return channel=="red" ? r.red : (channel=="blue" ? r.blue:r.green)}
+            return vignette ? r.vignette : (r.distortion ?? r.fisheye)
+        }
+        let rows=profile.records.filter{selected($0) != nil}
         guard !rows.isEmpty else{return nil}
-        func value(_ row:Record)->[String:Double] {vignette ? row.vignette! : (row.distortion ?? row.fisheye!)}
+        func value(_ row:Record)->[String:Double] {selected(row)!}
         func atFocal(_ f:Double)->[String:Double] {
             let group=rows.filter{abs(log($0.focal)-f)<0.00001}
             // Unknown focus uses the farthest calibration; no invented close-focus distance.
@@ -110,12 +115,30 @@ enum LocalLensProfiles {
         return vec4(color.rgb/mix(1.0,max(0.125,falloff),vig),color.a);
     }
     """)
-    static func apply(_ image:CIImage,meta:LensRenderer.Metadata,profile:Profile)throws->CIImage {
+    static let caKernel=CIKernel(source:"""
+    kernel vec4 localCA(sampler src,vec2 gc,vec2 gf,vec2 rc,vec2 rf,vec3 rk,float rs,vec2 bc,vec2 bf,vec3 bk,float bs) {
+        vec2 n=(destCoord()-gc)/gf;float r2=dot(n,n);
+        vec2 pr=rc+n*rf*rs*(1.0+r2*(rk.x+r2*(rk.y+r2*rk.z)));
+        vec2 pb=bc+n*bf*bs*(1.0+r2*(bk.x+r2*(bk.y+r2*bk.z)));
+        vec4 g=sample(src,samplerTransform(src,destCoord()));
+        return vec4(sample(src,samplerTransform(src,pr)).r,g.g,sample(src,samplerTransform(src,pb)).b,g.a);
+    }
+    """)
+    static func applyCA(_ image:CIImage,meta:LensRenderer.Metadata,profile:Profile)throws->CIImage {
+        guard let g=parameters(profile,meta,channel:"green"),let r=parameters(profile,meta,channel:"red"),let b=parameters(profile,meta,channel:"blue"),let caKernel else{throw LensRenderer.error("没有可用的色差校正参数")}
+        let size=image.extent.size,gm=mapping(g,meta,profile,size),rm=mapping(r,meta,profile,size),bm=mapping(b,meta,profile,size)
+        func pair(_ m:Mapping)->[Any] {[CIVector(cgPoint:m.center),CIVector(x:m.focal.width,y:m.focal.height)]}
+        let args:[Any]=[image]+pair(gm)+pair(rm)+[CIVector(x:rm.k[0],y:rm.k[1],z:rm.k[2]),r["ScaleFactor"] ?? 1]+pair(bm)+[CIVector(x:bm.k[0],y:bm.k[1],z:bm.k[2]),b["ScaleFactor"] ?? 1]
+        guard let out=caKernel.apply(extent:image.extent,roiCallback:{_,_ in image.extent},arguments:args) else{throw LensRenderer.error("色差校正失败")};return out
+    }
+    static func apply(_ image:CIImage,meta:LensRenderer.Metadata,profile:Profile,options:LensRenderer.Options=LensRenderer.Options(distortion:true,vignetting:true,chromatic:false))throws->CIImage {
         guard let values=parameters(profile,meta),let kernel else{throw LensRenderer.error("本地镜头配置无法使用")}
-        let rect=image.extent,size=rect.size,base=image.transformed(by:CGAffineTransform(translationX:-rect.minX,y:-rect.minY))
-        let m=mapping(values,meta,profile,size,fish:profile.records.contains{$0.fisheye != nil})
-        let v=parameters(profile,meta,vignette:true),vm=mapping(v ?? [:],meta,profile,size)
-        let z=cropScale(m,size)
+        let rect=image.extent,size=rect.size
+        var base=image.transformed(by:CGAffineTransform(translationX:-rect.minX,y:-rect.minY))
+        if options.chromatic {base=try applyCA(base,meta:meta,profile:profile)}
+        let m=mapping(options.distortion ? values:[:],meta,profile,size,fish:options.distortion && profile.records.contains{$0.fisheye != nil})
+        let v=options.vignetting ? parameters(profile,meta,vignette:true):nil,vm=mapping(v ?? [:],meta,profile,size)
+        let z=options.chromatic ? min(0.99,cropScale(m,size)) : (options.distortion ? cropScale(m,size):1)
         guard z>0.15 else{throw LensRenderer.error("镜头校正参数超出可用范围")}
         let args:[Any]=[base,CIVector(x:size.width,y:size.height),CIVector(cgPoint:m.center),CIVector(x:m.focal.width,y:m.focal.height),CIVector(x:m.k[0],y:m.k[1],z:m.k[2]),m.fish ? 1.0:0.0,z,CIVector(cgPoint:vm.center),CIVector(x:vm.focal.width,y:vm.focal.height),CIVector(x:v?["VignetteModelParam1"] ?? 0,y:v?["VignetteModelParam2"] ?? 0,z:v?["VignetteModelParam3"] ?? 0),v == nil ? 0.0:1.0]
         guard let result=kernel.apply(extent:CGRect(origin:.zero,size:size),roiCallback:{_,_ in base.extent},arguments:args) else{throw LensRenderer.error("本地镜头校正失败")}

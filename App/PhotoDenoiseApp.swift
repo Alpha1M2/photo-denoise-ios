@@ -21,7 +21,14 @@ import ImageIO
     @Published var lens = "未读取镜头"
     @Published var lensStatus = "镜头校正尚未检测"
     @Published var correctionAvailable = false
-    @Published var correction = false
+    @Published var correctDistortion=false
+    @Published var correctVignetting=false
+    @Published var correctChromatic=false
+    @Published var availableOptions=LensRenderer.Options(distortion:false,vignetting:false,chromatic:false)
+    var correction:Bool {
+        get {correctDistortion || correctVignetting || correctChromatic}
+        set {correctDistortion=newValue && availableOptions.distortion;correctVignetting=newValue && availableOptions.vignetting;correctChromatic=newValue && availableOptions.chromatic}
+    }
     @Published var cancelling = false
     @Published var previewImage: UIImage?
     @Published var previewRegion = CGRect.zero
@@ -37,6 +44,7 @@ import ImageIO
     var estimate=RenderEstimate()
     var wholeSeconds:Double?
     var inferenceStarted:TimeInterval=0
+    var etaDeadline:TimeInterval?
     let engine = DenoiseEngine()
     var detectedRaw=false
     @Published var accelerate=true
@@ -51,7 +59,7 @@ import ImageIO
             message="上次处理结果";Task{@MainActor in self.refreshDisplay()}
         }
         if smoke { Task { @MainActor in
-            if ProcessInfo.processInfo.arguments.contains("--smoke-lcp") {let detail=LocalLensProfiles.selfTest();reportSmoke(detail.hasPrefix("PASS"),detail);return}
+            if ProcessInfo.processInfo.arguments.contains("--smoke-lcp") {let local=LocalLensProfiles.selfTest(),sony=SonyCorrections.selfTest();reportSmoke(local.hasPrefix("PASS") && sony.hasPrefix("PASS"),local+"; "+sony);return}
             if ProcessInfo.processInfo.arguments.contains("--smoke-background") {
                 var mode="",starts=0,sawBackground=false
                 mode=RenderLifetime.shared.start(smoke:false,work:{
@@ -143,10 +151,12 @@ import ImageIO
                 lens = exif?[kCGImagePropertyExifLensModel as String] as? String ?? "镜头型号未识别"
             }
             let metadata=LensRenderer.Metadata(target)
+            availableOptions=LensRenderer.available(target)
             if !metadata.lens.isEmpty {lens=metadata.lens}
             if isRaw {
                 correctionAvailable = LensRenderer.supports(target)
-                if let profile=LocalLensProfiles.profile(metadata) {
+                if SonyCorrections(target) != nil {lensStatus="配置：索尼原片内嵌 · 独立校正"}
+                else if let profile=LocalLensProfiles.profile(metadata) {
                     lensStatus="配置：本地 LCP · 畸变 / 暗角 · 自动裁切"+(profile.records.contains{$0.piecewise != nil} ? " · 暗角多项式近似" : "")
                 } else {lensStatus = CIRAWFilter(imageURL:target)?.isLensCorrectionSupported == true ? "配置：系统镜头校正" : (correctionAvailable ? "配置：Lensfun · 畸变 / 暗角 / 色差 · 边缘裁切 4%" : "此原片暂无可用校正配置")}
             } else { correctionAvailable = LensRenderer.Metadata(target).matches24105; lensStatus = "JPEG 校正默认关闭 · 24–105 G 配置裁切 4%" }
@@ -181,14 +191,15 @@ import ImageIO
     func run(preview:Bool=false) {
         guard let source,!busy else{return}
         let localRaw=isRaw && DenoiseEngine.hasLocalLinearModel(),correct=correction && correctionAvailable
+        let correctionOptions=LensRenderer.Options(distortion:correctDistortion,vignetting:correctVignetting,chromatic:correctChromatic)
         let linear=localRaw || correct,rawSensor=isRaw && !linear
-        let key=source.path+"|"+String(correct)+"|"+String(localRaw)
+        let key=source.path+"|"+correctionOptions.key+"|"+String(localRaw)
         let reused=cachedKey==key ? cachedInput : nil
         let amount=Float(strength),region=visibleRegion,engine=self.engine
         let target=folder.appendingPathComponent("\(preview ? "preview" : "denoised")-\(UUID().uuidString).\(linear || rawSensor ? "dng" : "jpg")")
         interruptedMessage=nil;engine.cancelled=false;engine.useLocalLinearModel=localRaw;engine.requestedPreviewRegion=region;engine.accelerate=accelerate && !smoke
         backend=accelerate ? "准备加速引擎…" : "CPU"
-        busy=true;cancelling=false;previewing=preview;preparing=true;progress=0;eta="";backgroundStatus="";message="准备图像 · 请保持前台"
+        busy=true;cancelling=false;previewing=preview;preparing=true;progress=0;eta="";etaDeadline=nil;backgroundStatus="";message="准备图像 · 请保持前台"
         previewImage=nil;after=nil;result=nil
         UIApplication.shared.isIdleTimerDisabled=true
         if !preview && !smoke {RenderLifetime.shared.requestNotifications()}
@@ -201,7 +212,7 @@ import ImageIO
                         if localRaw && !correct {try DenoiseEngine.renderLinearRaw(source,destination:prepared);reference=DenoiseEngine.linearBufferPreview(prepared)}
                         else {
                             if correct {
-                                let image=try LensRenderer.correctedImage(source)
+                                let image=try LensRenderer.correctedImage(source,options:correctionOptions)
                                 try DenoiseEngine.prepareCIImage(image,destination:prepared,linear:localRaw)
                                 if localRaw {reference=DenoiseEngine.linearBufferPreview(prepared)}
                                 else if let cg=CIContext().createCGImage(image,from:image.extent) {reference=UIImage(cgImage:cg)}
@@ -234,13 +245,18 @@ import ImageIO
         progress=value
         backend=engine.backendName ?? "CPU"
         let now=ProcessInfo.processInfo.systemUptime
-        if value==0 {estimate.reset(now:now);inferenceStarted=now;eta="正在测算…";return}
+        if value==0 {estimate.reset(now:now);inferenceStarted=now;etaDeadline=nil;eta="正在测算…";return}
         let done=Int((value*Double(units)).rounded())
         estimate.update(done:done,now:now)
         if let rate=estimate.secondsPerUnit {wholeSeconds=rate*Double(fullUnits)}
-        if value>=1 {eta="正在写出…"}
-        else if let seconds=estimate.remaining(units) {eta="剩余 "+RenderEstimate.text(seconds)}
+        if value>=1 {etaDeadline=nil;eta="正在写出…"}
+        else if let seconds=estimate.remaining(units) {etaDeadline=now+seconds;refreshETA()}
         if !previewing {RenderLifetime.shared.update(value,subtitle:eta)}
+    }
+    func refreshETA() {
+        guard busy,!preparing,!cancelling,let deadline=etaDeadline else{return}
+        let seconds=max(0,Int(ceil(deadline-ProcessInfo.processInfo.systemUptime)))
+        eta=seconds>0 ? (seconds<60 ? "剩余约 \(seconds) 秒" : "剩余约 \(seconds/60) 分 \(seconds%60) 秒") : "仍在处理 · 正在更新估算…"
     }
     func execute(input:URL,target:URL,source:URL,amount:Float,raw:Bool,linear:Bool,preview:Bool) {
         let engine=self.engine
@@ -356,7 +372,9 @@ struct StudioView: View {
                             Text(model.lens).font(.subheadline)
                             Text(model.lensStatus).font(.caption).foregroundStyle(.secondary)
                             if model.correctionAvailable {
-                                Toggle("镜头校正",isOn:$model.correction)
+                                Toggle("畸变",isOn:$model.correctDistortion).disabled(!model.availableOptions.distortion)
+                                Toggle("暗角",isOn:$model.correctVignetting).disabled(!model.availableOptions.vignetting)
+                                Toggle("色差",isOn:$model.correctChromatic).disabled(!model.availableOptions.chromatic)
                                 if !model.isRaw {Text("仅用于未经机内校正的 JPEG").font(.caption).foregroundStyle(.secondary)}
                             }
                             Text(DenoiseEngine.hasLocalLinearModel() ? "RAW 输出 16 位线性 DNG" : "校正输出 16 位线性 DNG；未校正输出 Bayer DNG。").font(.caption).foregroundStyle(.secondary)
@@ -386,6 +404,13 @@ struct StudioView: View {
             }.background(Color(white:0.10)).tint(accent)
         }
         .onChange(of:scenePhase) {_,phase in if phase == .background {model.didBackground()};if phase == .active {model.refreshDisplay()}}
+        .task(id:model.busy) {
+            guard model.busy else{return}
+            while !Task.isCancelled {
+                do {try await Task.sleep(nanoseconds:1_000_000_000)}catch{break}
+                model.refreshETA()
+            }
+        }
         .fileImporter(isPresented:$showFiles,allowedContentTypes:[.image,.data],allowsMultipleSelection:false) { result in if case .success(let urls)=result,let url=urls.first {model.load(url)} }
         .onChange(of:photo) { _, item in Task { if let data = try? await item?.loadTransferable(type:Data.self) { let ext=item?.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg";let url=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString+"."+ext);do {try data.write(to:url);model.load(url);try? FileManager.default.removeItem(at:url)}catch {model.message=error.localizedDescription} } } }
         .sheet(isPresented:$share) { if let url=model.result { ShareSheet(url:url) } }

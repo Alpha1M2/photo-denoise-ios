@@ -3,6 +3,18 @@ import CoreImage
 import ImageIO
 
 enum LensRenderer {
+    struct Options {
+        var distortion=true,vignetting=true,chromatic=true
+        var any:Bool {distortion || vignetting || chromatic}
+        var key:String {"\(distortion)|\(vignetting)|\(chromatic)"}
+    }
+    static func available(_ url:URL)->Options {
+        let meta=Metadata(url)
+        if let sony=SonyCorrections(url) {return Options(distortion:sony.distortion != nil,vignetting:sony.vignette != nil,chromatic:sony.red != nil && sony.blue != nil)}
+        if let profile=LocalLensProfiles.profile(meta) {return Options(distortion:true,vignetting:profile.records.contains{$0.vignette != nil},chromatic:profile.records.contains{$0.red != nil && $0.blue != nil && $0.green != nil})}
+        if meta.matches24105{return Options()}
+        return Options(distortion:false,vignetting:false,chromatic:false)
+    }
     struct Metadata {
         var lens = "", focal = 0.0, aperture = 0.0, focal35=0.0, distance=0.0
         var camera="",isRaw=false,orientation=1
@@ -25,9 +37,7 @@ enum LensRenderer {
         var matches24105:Bool { lens.uppercased().contains("FE 24-105MM") && lens.uppercased().contains("G OSS") && focal>=24 && focal<=105 }
     }
     static func supports(_ url:URL)->Bool {
-        if LocalLensProfiles.profile(Metadata(url)) != nil{return true}
-        if let raw=CIRAWFilter(imageURL:url), raw.isLensCorrectionSupported{return true}
-        return Metadata(url).matches24105
+        available(url).any
     }
     private static func interpolate(_ rows:[[String:Double]],at x:Double,key:String)->[String:Double] {
         let sorted=rows.sorted{($0[key] ?? 0)<($1[key] ?? 0)}
@@ -62,34 +72,38 @@ enum LensRenderer {
         let context=CIContext(options:[.cacheIntermediates:false,.workingFormat:CIFormat.RGBAf.rawValue])
         try context.writeTIFFRepresentation(of:result,to:destination,format:.RGBA16,colorSpace:CGColorSpace(name:CGColorSpace.sRGB)!,options:[:])
     }
-    static func correctedImage(_ source:URL,correct:Bool=true) throws -> CIImage {
+    static func correctedImage(_ source:URL,correct:Bool=true,options:Options=Options()) throws -> CIImage {
         let meta=Metadata(source)
+        if correct,let sony=SonyCorrections(source) {
+            return try sony.apply(DenoiseEngine.rawLinearImage(source),options:options)
+        }
         if correct,let profile=LocalLensProfiles.profile(meta) {
             // Decode with LibRaw to avoid applying Apple's correction a second time.
             let image=try DenoiseEngine.rawLinearImage(source)
-            return try LocalLensProfiles.apply(image,meta:meta,profile:profile)
+            return try LocalLensProfiles.apply(image,meta:meta,profile:profile,options:options)
         }
         var image:CIImage?
         var systemCorrected=false
         if let raw=CIRAWFilter(imageURL:source) {
-            raw.isLensCorrectionEnabled=correct && raw.isLensCorrectionSupported
+            raw.isLensCorrectionEnabled=false
             raw.baselineExposure=0;raw.exposure=0;raw.boostAmount=0;raw.boostShadowAmount=0;raw.localToneMapAmount=0;raw.contrastAmount=0;raw.detailAmount=0;raw.sharpnessAmount=0;raw.moireReductionAmount=0
             raw.luminanceNoiseReductionAmount=0
             raw.colorNoiseReductionAmount=0
             image=raw.outputImage
-            systemCorrected=raw.isLensCorrectionSupported
+            systemCorrected=false
         } else { image=CIImage(contentsOf:source,options:[.applyOrientationProperty:true]) }
         guard var result=image else{throw error("无法显影原片，不能应用镜头校正。")}
         if correct && !systemCorrected {
             guard meta.matches24105,meta.aperture>0,let path=Bundle.main.url(forResource:"sony24105",withExtension:"json"),let data=try JSONSerialization.jsonObject(with:Data(contentsOf:path)) as? [String:Any],let ds=data["distortion"] as? [[String:Double]],let cs=data["tca"] as? [[String:Double]],let vs=data["vignetting"] as? [[String:Double]],let kernel else{throw error("此镜头尚无可用的校正数据，未应用替代配置。")}
-            let d=interpolate(ds,at:meta.focal,key:"focal"),c=interpolate(cs,at:meta.focal,key:"focal")
+            let d=options.distortion ? interpolate(ds,at:meta.focal,key:"focal") : [:],c=options.chromatic ? interpolate(cs,at:meta.focal,key:"focal") : [:]
             let focals=Set(vs.compactMap{$0["focal"]}).sorted()
-            let v=interpolate(focals.map{f -> [String:Double] in var row=interpolate(vs.filter{$0["focal"]==f},at:meta.aperture,key:"aperture");row["focal"]=f;return row},at:meta.focal,key:"focal")
+            let v=options.vignetting ? interpolate(focals.map{f -> [String:Double] in var row=interpolate(vs.filter{$0["focal"]==f},at:meta.aperture,key:"aperture");row["focal"]=f;return row},at:meta.focal,key:"focal") : [:]
             let rect=result.extent,w=rect.width,h=rect.height
             let args:[Any]=[result,CIVector(x:rect.midX,y:rect.midY),min(w,h)/2,hypot(w,h)/2,CIVector(x:d["a"] ?? 0,y:d["b"] ?? 0,z:d["c"] ?? 0),CIVector(x:c["br"] ?? 0,y:c["vr"] ?? 1,z:c["bb"] ?? 0,w:c["vb"] ?? 1),CIVector(x:v["k1"] ?? 0,y:v["k2"] ?? 0,z:v["k3"] ?? 0)]
             guard let corrected=kernel.apply(extent:rect,roiCallback:{_,_ in rect},arguments:args) else{throw error("镜头校正内核运行失败。")}
             // Conservative crop avoids extrapolated corner pixels. The UI discloses this crop.
-            let inset=rect.insetBy(dx:w*0.04,dy:h*0.04)
+            let crop=options.distortion || options.chromatic ? 0.04:0.0
+            let inset=rect.insetBy(dx:w*crop,dy:h*crop)
             result=corrected.cropped(to:inset).transformed(by:CGAffineTransform(translationX:-inset.minX,y:-inset.minY))
         }
         return result
